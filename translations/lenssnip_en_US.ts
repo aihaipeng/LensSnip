@@ -313,6 +313,26 @@
         <translation>Auto mosaic: detect text, QR codes and images; click to cover</translation>
     </message>
     <message>
+        <source>正在扫描选区</source>
+        <translation>Scanning selection</translation>
+    </message>
+    <message>
+        <source>识别文字、二维码与图像元素</source>
+        <translation>Detecting text, QR codes and image elements</translation>
+    </message>
+    <message>
+        <source>发现 %1 处可遮挡内容</source>
+        <translation>Found %1 items to cover</translation>
+    </message>
+    <message>
+        <source>悬停查看，点击遮挡</source>
+        <translation>Hover to inspect, click to cover</translation>
+    </message>
+    <message>
+        <source>已遮挡 %1/%2</source>
+        <translation>Covered %1/%2</translation>
+    </message>
+    <message>
         <source>同步操作</source>
         <translation>Synchronous operation</translation>
     </message>

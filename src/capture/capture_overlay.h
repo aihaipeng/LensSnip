@@ -43,6 +43,7 @@ class OcrDialog;
 #include <QCheckBox>
 #include <QCursor>
 #include <QTimer>
+#include <QElapsedTimer>
 #include <QPointer>
 #include <QCloseEvent>
 #include <QPolygonF>
@@ -242,8 +243,10 @@ private:
     void addAutoMosaicBlock(const QRect &rect);
     void setAutoMosaicMode(bool blur);
     void setAutoMosaicStrength(int value);
+    void updateAutoMosaicCount();
     void paintAutoMosaicOverlay(QPainter &p) const;
     void paintAutoMosaicStatus(QPainter &p) const;
+    void paintAutoMosaicHud(QPainter &p) const;
     void selectMarkerMode(bool fill, bool ellipse = false);
     void scheduleSmartErase(int index, const QImage &source);   // Async erase for the annotation at index.
     static QImage smartEraseMask(const Annotation &ann, const QSize &deviceSize, qreal dpr);
@@ -479,14 +482,16 @@ private:
     QComboBox *m_autoModeCombo = nullptr;
     QSlider *m_autoStrengthSlider = nullptr;
     QCheckBox *m_autoSyncBox = nullptr;
+    QLabel *m_autoCountLabel = nullptr;
     bool m_autoMosaic = false, m_autoMosaicBlur = false, m_autoMosaicSync = true, m_autoDragUndo = false;
     int m_autoMosaicLevels[2] = {6, 6}, m_autoMosaicStrength = 6;
     QFutureWatcher<AutoMosaic::Result> *m_autoWatcher = nullptr;
     std::shared_ptr<std::atomic_bool> m_autoCancel;
     int m_autoEpoch = 0;
     bool m_autoPending = false;
+    bool m_autoReveal = false;
     QTimer m_autoSpinTimer;
-    int m_autoSpinAngle = 0;
+    QElapsedTimer m_autoScanElapsed;
     int m_autoHoverAnn = -1, m_autoHoverBlock = -1;
     int m_autoPressAnn = -1, m_autoPressBlock = -1;
     bool m_autoPressMoved = false, m_autoDragging = false;

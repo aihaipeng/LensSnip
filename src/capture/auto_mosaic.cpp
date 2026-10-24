@@ -5,13 +5,18 @@
 #include "text/engines/ocr_engine.h"
 #include <QFontMetrics>
 #include <QFutureWatcher>
+#include <QLinearGradient>
 #include <QPainter>
+#include <QPainterPath>
 #include <QRandomGenerator>
 #include <QRegularExpression>
 #include <QtConcurrent>
 #include <algorithm>
 
 namespace {
+constexpr int kAutoRevealMs = 2000;
+constexpr int kAutoScanHalfMs = 1050;
+
 const QRegularExpression &urlPattern()
 {
     static const QRegularExpression pattern(QStringLiteral(R"(\b(?:https?://|www\.)\S+)"),
@@ -300,6 +305,8 @@ void CaptureOverlay::startAutoMosaicDetection()
     auto cancel = std::make_shared<std::atomic_bool>(false);
     m_autoCancel = cancel;
     m_autoPending = true;
+    m_autoReveal = false;
+    m_autoScanElapsed.start();
     m_autoSpinTimer.start();
     update();
 
@@ -313,7 +320,9 @@ void CaptureOverlay::startAutoMosaicDetection()
     image.setDevicePixelRatio(1);
     if (image.isNull() || image.width() < 8 || image.height() < 8) {
         m_autoPending = false;
+        m_autoReveal = false;
         m_autoSpinTimer.stop();
+        update();
         return;
     }
     const int epoch = m_autoEpoch;
@@ -339,6 +348,7 @@ void CaptureOverlay::cancelAutoMosaicDetection()
     if (m_autoCancel) m_autoCancel->store(true);
     m_autoCancel.reset();
     m_autoPending = false;
+    m_autoReveal = false;
     m_autoSpinTimer.stop();
     if (m_autoWatcher) {
         m_autoWatcher->disconnect(this);
@@ -359,6 +369,22 @@ const CaptureOverlay::Annotation *CaptureOverlay::autoMosaicAnnotation() const
     for (int i = m_anns.size() - 1; i >= 0; --i)
         if (m_anns[i].autoMosaic) return &m_anns[i];
     return nullptr;
+}
+
+void CaptureOverlay::updateAutoMosaicCount()
+{
+    if (!m_autoCountLabel) return;
+    int total = 0, included = 0;
+    if (const Annotation *ann = autoMosaicAnnotation()) {
+        total = ann->autoBlocks.size();
+        for (const Annotation::AutoBlock &block : ann->autoBlocks)
+            if (block.included) ++included;
+    }
+    const QString text = tr("已遮挡 %1/%2").arg(included).arg(total);
+    m_autoCountLabel->setText(text);
+    m_autoCountLabel->setAccessibleName(text);
+    m_autoCountLabel->setToolTip(tr("悬停查看，点击遮挡"));
+    m_autoCountLabel->setVisible(total > 0);
 }
 
 void CaptureOverlay::applyAutoMosaicResult(const AutoMosaic::Result &result, const QRect &selection, qreal dpr)
@@ -386,7 +412,10 @@ void CaptureOverlay::applyAutoMosaicResult(const AutoMosaic::Result &result, con
         // Detection only proposes candidates; the user clicks a block to cover it.
         fresh.append({logical, detected.key, false});
     }
-    if (fresh.isEmpty()) return;
+    if (fresh.isEmpty()) {
+        updateAutoMosaicCount();
+        return;
+    }
 
     pushUndo();
     if (!ann) {
@@ -406,6 +435,15 @@ void CaptureOverlay::applyAutoMosaicResult(const AutoMosaic::Result &result, con
     for (const auto &block : ann->autoBlocks) bounds = bounds.united(block.rect);
     ann->rect = bounds;
     m_selAnn = -1;                          // Blocks are toggled, never moved by the regular handles.
+    updateAutoMosaicCount();
+    placeToolBars();
+    m_autoReveal = true;
+    const int epoch = m_autoEpoch;
+    QTimer::singleShot(kAutoRevealMs, this, [this, epoch] {
+        if (epoch != m_autoEpoch) return;
+        m_autoReveal = false;
+        update();
+    });
     update();
 }
 
@@ -444,6 +482,7 @@ void CaptureOverlay::toggleAutoMosaicBlock(int annIndex, int blockIndex)
         ann.autoBlocks[blockIndex].included = included;
         dirty = ann.autoBlocks[blockIndex].rect;
     }
+    updateAutoMosaicCount();
     if (!dirty.isNull()) update(dirty.adjusted(-4, -4, 4, 4));
 }
 
@@ -472,6 +511,8 @@ void CaptureOverlay::addAutoMosaicBlock(const QRect &rect)
     ann->autoBlocks.append({block, QString(), true});
     ann->rect = ann->rect.united(block);
     m_selAnn = -1;
+    updateAutoMosaicCount();
+    placeToolBars();
     update(block.adjusted(-4, -4, 4, 4));
 }
 
@@ -533,11 +574,28 @@ void CaptureOverlay::setAutoMosaicStrength(int value)
 void CaptureOverlay::paintAutoMosaicOverlay(QPainter &p) const
 {
     if (!m_autoMosaic || m_atool != ATool::Mosaic || m_mode != Adjusting) return;
+    const Annotation *autoAnn = autoMosaicAnnotation();
+    if (!autoAnn) return;
+
+    // The result is shown as one batch for a short moment: the user sees the
+    // whole candidate set, then only the hovered frame remains visible.
+    if (m_autoReveal) {
+        p.save();
+        p.setRenderHint(QPainter::Antialiasing, false);
+        for (const Annotation::AutoBlock &block : autoAnn->autoBlocks) {
+            const QRect r = block.rect.normalized();
+            if (r.isEmpty()) continue;
+            p.fillRect(r, QColor(94, 106, 210, 24));
+            p.setPen(QPen(QColor(143, 155, 255, 210), 1.2, Qt::SolidLine));
+            p.setBrush(Qt::NoBrush);
+            p.drawRect(QRectF(r).adjusted(0.5, 0.5, -0.5, -0.5));
+        }
+        p.restore();
+    }
+
     if (m_autoHoverAnn < 0 || m_autoHoverAnn >= m_anns.size()) return;
     const Annotation &ann = m_anns[m_autoHoverAnn];
     if (!ann.autoMosaic || m_autoHoverBlock < 0 || m_autoHoverBlock >= ann.autoBlocks.size()) return;
-    // Only the block under the pointer is outlined; the rest stay invisible until
-    // hovered so the capture is not covered by a wall of candidate frames.
     const Annotation::AutoBlock &block = ann.autoBlocks[m_autoHoverBlock];
     const QRect r = block.rect.normalized();
     p.save();
@@ -563,25 +621,169 @@ void CaptureOverlay::paintAutoMosaicOverlay(QPainter &p) const
 
 void CaptureOverlay::paintAutoMosaicStatus(QPainter &p) const
 {
-    if (!m_autoPending || m_sel.isNull()) return;
-    QFont font = p.font();
-    font.setPointSizeF(10.5);
-    const QFontMetrics metrics(font);
-    const QString text = tr("正在识别…");
-    const int width = metrics.horizontalAdvance(text) + 48;
-    QRect box(m_sel.center().x() - width / 2, m_sel.bottom() + 14, width, 28);
-    if (box.bottom() > height() - 4) box.moveBottom(m_sel.top() - 10);
-    box.moveTop(qBound(4, box.top(), qMax(4, height() - box.height() - 4)));
+    if (!m_autoMosaic || m_atool != ATool::Mosaic || m_mode != Adjusting || m_sel.isNull()) return;
+    const QRect sel = m_sel.normalized();
+    const qint64 elapsed = m_autoScanElapsed.isValid() ? m_autoScanElapsed.elapsed() : 0;
+
+    if (m_autoPending) {
+        p.save();
+        p.setClipRect(sel);
+        p.setRenderHint(QPainter::Antialiasing, false);
+
+        // A sparse analysis grid gives the frozen capture a scanning surface
+        // without hiding the content underneath.
+        const QPen minor(QColor(143, 155, 255, 10), 1);
+        const QPen major(QColor(143, 155, 255, 24), 1);
+        for (int x = sel.left() + 24; x < sel.right(); x += 24) {
+            p.setPen((x - sel.left()) % 96 == 0 ? major : minor);
+            p.drawLine(QPointF(x + 0.5, sel.top()), QPointF(x + 0.5, sel.bottom()));
+        }
+        for (int y = sel.top() + 24; y < sel.bottom(); y += 24) {
+            p.setPen((y - sel.top()) % 96 == 0 ? major : minor);
+            p.drawLine(QPointF(sel.left(), y + 0.5), QPointF(sel.right(), y + 0.5));
+        }
+
+        const qint64 phase = elapsed % (kAutoScanHalfMs * 2);
+        const bool down = phase < kAutoScanHalfMs;
+        const qreal raw = down ? phase / qreal(kAutoScanHalfMs)
+                               : (phase - kAutoScanHalfMs) / qreal(kAutoScanHalfMs);
+        const qreal eased = raw < 0.5 ? 4 * raw * raw * raw
+                                      : 1 - qPow(-2 * raw + 2, 3) / 2;
+        const qreal edge = down ? eased * sel.height() : (1.0 - eased) * sel.height();
+        const qreal bandH = qMin<qreal>(220, sel.height());
+        const QRectF band = down
+            ? QRectF(sel.left(), sel.top() + edge - bandH, sel.width(), bandH)
+            : QRectF(sel.left(), sel.top() + edge, sel.width(), bandH);
+
+        QLinearGradient gradient(band.topLeft(), band.bottomLeft());
+        if (down) {
+            gradient.setColorAt(0.00, QColor(94, 106, 210, 0));
+            gradient.setColorAt(0.45, QColor(94, 106, 210, 9));
+            gradient.setColorAt(0.82, QColor(94, 106, 210, 33));
+            gradient.setColorAt(0.96, QColor(143, 155, 255, 61));
+            gradient.setColorAt(1.00, QColor(168, 177, 255, 133));
+        } else {
+            gradient.setColorAt(0.00, QColor(168, 177, 255, 133));
+            gradient.setColorAt(0.04, QColor(143, 155, 255, 61));
+            gradient.setColorAt(0.18, QColor(94, 106, 210, 33));
+            gradient.setColorAt(0.55, QColor(94, 106, 210, 9));
+            gradient.setColorAt(1.00, QColor(94, 106, 210, 0));
+        }
+        p.fillRect(band, gradient);
+
+        static const QPixmap checker = [] {
+            QPixmap tile(28, 28);
+            tile.fill(Qt::transparent);
+            QPainter painter(&tile);
+            const QColor cell(168, 177, 255, 18);
+            painter.fillRect(0, 0, 14, 14, cell);
+            painter.fillRect(14, 14, 14, 14, cell);
+            return tile;
+        }();
+        p.save();
+        p.setClipRect(band.toRect());
+        p.setOpacity(0.55);
+        p.fillRect(band, QBrush(checker));
+        p.restore();
+
+        const QPointF from(sel.left(), sel.top() + edge);
+        const QPointF to(sel.right(), sel.top() + edge);
+        p.setPen(QPen(QColor(94, 106, 210, 80), 7, Qt::SolidLine, Qt::RoundCap));
+        p.drawLine(from, to);
+        p.setPen(QPen(QColor(200, 205, 255, 235), 1.2));
+        p.drawLine(from, to);
+        p.restore();
+    }
+
+}
+
+void CaptureOverlay::paintAutoMosaicHud(QPainter &p) const
+{
+    if (!m_autoMosaic || m_atool != ATool::Mosaic || m_mode != Adjusting || m_sel.isNull()) return;
+    if (!m_autoPending && !m_autoReveal) return;
+    const QRect sel = m_sel.normalized();
+    const qint64 elapsed = m_autoScanElapsed.isValid() ? m_autoScanElapsed.elapsed() : 0;
+
+    int total = 0;
+    if (const Annotation *ann = autoMosaicAnnotation()) total = ann->autoBlocks.size();
+    const bool done = !m_autoPending;
+    const int width = qMin(320, qMax(180, sel.width() - 24));
+    const int hudH = 54;
+    QRect hud(sel.center().x() - width / 2, sel.top() - hudH / 2, width, hudH);
+    hud.moveLeft(qBound(4, hud.left(), qMax(4, this->width() - width - 4)));
+    hud.moveTop(qBound(4, hud.top(), qMax(4, this->height() - hudH - 4)));
+
     p.save();
+    p.setRenderHint(QPainter::Antialiasing, true);
     p.setPen(Qt::NoPen);
-    p.setBrush(QColor(24, 25, 29, 235));
-    p.drawRoundedRect(box, 14, 14);
-    p.setBrush(Qt::NoBrush);
-    p.setPen(QPen(QColor(143, 155, 255), 2));
-    const QRect spinner(box.left() + 13, box.center().y() - 6, 12, 12);
-    p.drawArc(spinner, m_autoSpinAngle * 16, 260 * 16);
-    p.setPen(QColor(244, 245, 248));
-    p.setFont(font);
-    p.drawText(box.adjusted(33, 0, -8, 0), Qt::AlignVCenter | Qt::AlignLeft, text);
+    p.setBrush(QColor(0, 0, 0, 70));
+    p.drawRoundedRect(QRectF(hud).translated(0, 3), 12, 12);
+    p.setBrush(QColor(17, 18, 24, 242));
+    p.setPen(QPen(done ? QColor(87, 211, 140, 110) : QColor(94, 106, 210, 122), 1));
+    p.drawRoundedRect(QRectF(hud), 12, 12);
+
+    const QPointF signal(hud.left() + 26, hud.center().y() + 0.5);
+    p.setPen(Qt::NoPen);
+    p.setBrush(done ? QColor(87, 211, 140, 34) : QColor(94, 106, 210, 40));
+    p.drawEllipse(signal, 13, 13);
+    if (done) {
+        QPainterPath check;
+        check.moveTo(signal.x() - 5, signal.y());
+        check.lineTo(signal.x() - 1.5, signal.y() + 4);
+        check.lineTo(signal.x() + 6, signal.y() - 5.5);
+        p.setPen(QPen(QColor(87, 211, 140), 2, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        p.setBrush(Qt::NoBrush);
+        p.drawPath(check);
+    } else {
+        const qreal pulse = (elapsed % 1600) / 1600.0;
+        p.setBrush(Qt::NoBrush);
+        p.setPen(QPen(QColor(143, 155, 255, qRound(90 * (1.0 - pulse))), 1));
+        p.drawEllipse(signal, 9.5 + 4 * pulse, 9.5 + 4 * pulse);
+        p.setPen(Qt::NoPen);
+        p.setBrush(QColor(143, 155, 255));
+        p.drawEllipse(signal, 3.2, 3.2);
+    }
+
+    const QString title = done ? tr("发现 %1 处可遮挡内容").arg(total)
+                               : tr("正在扫描选区");
+    const QString subtitle = done ? tr("悬停查看，点击遮挡")
+                                  : tr("识别文字、二维码与图像元素");
+    QFont titleFont = p.font();
+    titleFont.setPixelSize(13);
+    titleFont.setWeight(QFont::DemiBold);
+    QFont subtitleFont = p.font();
+    subtitleFont.setPixelSize(11);
+    const int textX = hud.left() + 50;
+    const int textWidth = qMax(20, hud.right() - 14 - textX);
+    p.setFont(titleFont);
+    p.setPen(QColor(238, 240, 245));
+    p.drawText(QRect(textX, hud.top() + 8, textWidth, 17),
+               Qt::AlignLeft | Qt::AlignVCenter,
+               QFontMetrics(titleFont).elidedText(title, Qt::ElideRight, textWidth));
+    p.setFont(subtitleFont);
+    p.setPen(QColor(142, 147, 162));
+    p.drawText(QRect(textX, hud.top() + 27, textWidth, 14),
+               Qt::AlignLeft | Qt::AlignVCenter,
+               QFontMetrics(subtitleFont).elidedText(subtitle, Qt::ElideRight, textWidth));
+
+    p.save();
+    QPainterPath clip;
+    clip.addRoundedRect(QRectF(hud), 12, 12);
+    p.setClipPath(clip);
+    if (done) {
+        p.setPen(QPen(QColor(87, 211, 140, 90), 1));
+        p.drawLine(QPointF(hud.left() + 12, hud.bottom() - 0.5),
+                   QPointF(hud.right() - 12, hud.bottom() - 0.5));
+    } else {
+        const qreal railPhase = (elapsed % 1500) / 1500.0;
+        const qreal railWidth = hud.width() * 0.36;
+        const qreal x = hud.left() - railWidth + (hud.width() + railWidth) * railPhase;
+        QLinearGradient rail(x, 0, x + railWidth, 0);
+        rail.setColorAt(0, QColor(143, 155, 255, 0));
+        rail.setColorAt(0.5, QColor(143, 155, 255, 220));
+        rail.setColorAt(1, QColor(143, 155, 255, 0));
+        p.fillRect(QRectF(x, hud.bottom() - 1.5, railWidth, 1.2), rail);
+    }
+    p.restore();
     p.restore();
 }

@@ -3047,6 +3047,7 @@ void CaptureOverlay::updateToolOptions()
     m_autoModeCombo = nullptr;
     m_autoStrengthSlider = nullptr;
     m_autoSyncBox = nullptr;
+    m_autoCountLabel = nullptr;
     m_colorBoard = nullptr;
     delete m_toolOptions->layout();              // Drops the previous row.
     const QList<QWidget *> stale = m_toolOptions->findChildren<QWidget *>(QString(), Qt::FindDirectChildrenOnly);
@@ -3196,7 +3197,17 @@ void CaptureOverlay::updateToolOptions()
             settings.setValue(QStringLiteral("Capture/AutoMosaicSync"), on);
         });
         lay->addWidget(m_autoSyncBox);
+        m_autoCountLabel = new QLabel;
+        m_autoCountLabel->setObjectName(QStringLiteral("autoMosaicCount"));
+        m_autoCountLabel->setFocusPolicy(Qt::NoFocus);
+        m_autoCountLabel->setFixedWidth(92);
+        m_autoCountLabel->setAlignment(Qt::AlignCenter);
+        m_autoCountLabel->setStyleSheet(QStringLiteral(
+            "QLabel{color:#aeb2be;font-size:11px;border:1px solid #2b2d33;"
+            "border-radius:5px;padding:2px 6px;background:#13151b;}"));
+        lay->addWidget(m_autoCountLabel);
         for (int i = 0; i < lay->count(); ++i) lay->itemAt(i)->widget()->show();
+        updateAutoMosaicCount();
         m_toolOptions->show();
         if (m_embedded) {
             m_toolOptions->adjustSize();

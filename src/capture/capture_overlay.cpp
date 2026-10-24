@@ -114,11 +114,8 @@ CaptureOverlay::CaptureOverlay(const QVector<ScreenFrame> &frames,
         m_autoMosaicStrength = m_autoMosaicLevels[m_autoMosaicBlur ? 1 : 0];
         m_autoMosaicSync = settings.value(QStringLiteral("Capture/AutoMosaicSync"), true).toBool();
     }
-    m_autoSpinTimer.setInterval(60);
-    connect(&m_autoSpinTimer, &QTimer::timeout, this, [this] {
-        m_autoSpinAngle = (m_autoSpinAngle + 30) % 360;
-        update();
-    });
+    m_autoSpinTimer.setInterval(33);
+    connect(&m_autoSpinTimer, &QTimer::timeout, this, [this] { update(); });
     if (m_embedded) {
         // A child canvas inside the pin: no session chrome, no freeze, no
         // foreground claim. The single frame is the pin's current pixels.
@@ -720,6 +717,7 @@ void CaptureOverlay::paintEvent(QPaintEvent *event)
     if (m_mode == Adjusting && !m_sel.isNull() && m_hover.isNull() && !m_pinEdit)  // Eight resize handles.
         for (const QRect &h : handleRects(m_sel))
             paintHandle(p, h.center() + QPoint(1, 1));
+    paintAutoMosaicHud(p);                       // Status stays above the frame and its handles.
     if (m_pinEdit && !m_embedded && !m_sel.isNull()) {   // The pin keeps its resting hairline; overlay chrome, never baked.
         p.setPen(QPen(QColor(0, 0, 0, 90), 1));
         p.drawRect(m_sel.adjusted(0, 0, -1, -1));

@@ -11,6 +11,7 @@
 #include <QFont>
 #include <QGuiApplication>
 #include <QImage>
+#include <QLabel>
 #include <QMouseEvent>
 #include <QPainter>
 #include <QScreen>
@@ -193,6 +194,11 @@ int CaptureOverlay::testAutoMosaic(const QString &previewPath)
             overlay->selectAutoMosaic();
             check(waitUntil([&overlay] { return !overlay->m_autoPending; }),
                   "the overlay scan finishes");
+            check(overlay->m_autoReveal, "the result frames are revealed as one batch");
+            check(overlay->m_autoCountLabel && !overlay->m_autoCountLabel->isHidden(),
+                  "the auto strip shows the covered count");
+            check(waitUntil([&overlay] { return !overlay->m_autoReveal; }, 5000),
+                  "the result frames stay visible for two seconds");
             const Annotation *found = overlay->autoMosaicAnnotation();
             check(found && found->autoBlocks.size() >= 2,
                   "activation installs the recognized blocks");
@@ -205,12 +211,15 @@ int CaptureOverlay::testAutoMosaic(const QString &previewPath)
             }
             check(email > 0 && url > 0, "the overlay keeps e-mail and link blocks");
             const QPoint at = found->autoBlocks.first().rect.center();
+            const QString countBefore = overlay->m_autoCountLabel->text();
             QMouseEvent click = mouse(QEvent::MouseButtonPress, at, Qt::LeftButton, Qt::LeftButton);
             QMouseEvent up = mouse(QEvent::MouseButtonRelease, at, Qt::LeftButton, Qt::NoButton);
             overlay->mousePressEvent(&click);
             overlay->mouseReleaseEvent(&up);
             check(overlay->autoMosaicAnnotation()->autoBlocks.first().included,
                   "clicking a candidate applies its mosaic");
+            check(overlay->m_autoCountLabel->text() != countBefore,
+                  "clicking updates the covered count");
             overlay->mousePressEvent(&click);
             overlay->mouseReleaseEvent(&up);
             check(!overlay->autoMosaicAnnotation()->autoBlocks.first().included,
@@ -385,6 +394,64 @@ int CaptureOverlay::testAutoMosaic(const QString &previewPath)
         overlay->wheelEvent(&wheel);
         check(overlay->m_autoMosaicStrength == 7 && overlay->m_anns[0].mosaicStrength == 7,
               "wheel tunes the applied mosaic strength");
+        overlay->close();
+    }
+
+    if (!previewPath.isEmpty()) {
+        // Deterministic paint previews: the scan state and the one-shot result
+        // frames do not depend on how fast OCR happens to finish.
+        auto overlay = testOverlay();
+        QImage canvas(1200, 600, QImage::Format_RGB32);
+        canvas.fill(QColor(242, 243, 246));
+        {
+            QPainter p(&canvas);
+            QFont font(QStringLiteral("Microsoft YaHei UI"));
+            font.setPixelSize(24);
+            p.setFont(font);
+            p.setPen(QColor(32, 34, 40));
+            p.drawText(80, 145, QStringLiteral("zhang.wei@lumen.dev"));
+            p.drawText(80, 225, QStringLiteral("+86 138 0013 8000"));
+            p.setBrush(QColor(210, 120, 90));
+            p.setPen(Qt::NoPen);
+            p.drawEllipse(QRect(760, 90, 64, 64));
+            p.setBrush(QColor(32, 34, 40));
+            p.drawRect(QRect(760, 210, 120, 120));
+        }
+        overlay->setImage(canvas);
+        overlay->presetSelection(QRect(40, 60, 1000, 400));
+        overlay->m_autoMosaic = true;
+        overlay->m_atool = ATool::Mosaic;
+        overlay->m_mode = Adjusting;
+        Annotation preview;
+        preview.tool = ATool::Mosaic;
+        preview.autoMosaic = true;
+        preview.rect = QRect(40, 60, 1000, 400);
+        preview.autoBlocks = {
+            {QRect(76, 118, 360, 38), QStringLiteral("email:a"), false},
+            {QRect(76, 198, 320, 38), QStringLiteral("phone:a"), true},
+            {QRect(756, 86, 72, 72), QStringLiteral("image:a"), false},
+            {QRect(756, 206, 128, 128), QStringLiteral("qr:a"), false}
+        };
+        overlay->m_anns.append(preview);
+        overlay->updateToolOptions();
+        overlay->m_autoPending = true;
+        overlay->m_autoScanElapsed.start();
+        QEventLoop wait;
+        QTimer::singleShot(480, &wait, &QEventLoop::quit);
+        wait.exec();
+        QImage frame(overlay->size(), QImage::Format_RGB32);
+        frame.fill(QColor(12, 14, 18));
+        overlay->render(&frame);
+        frame.copy(QRect(0, 0, 1120, 560)).save(previewPath + QStringLiteral("-scan.png"));
+        overlay->m_autoPending = false;
+        overlay->m_autoReveal = true;
+        frame.fill(QColor(12, 14, 18));
+        overlay->render(&frame);
+        frame.copy(QRect(0, 0, 1120, 560)).save(previewPath + QStringLiteral("-result.png"));
+        overlay->m_autoReveal = false;
+        frame.fill(QColor(12, 14, 18));
+        overlay->render(&frame);
+        frame.copy(QRect(0, 0, 1120, 560)).save(previewPath + QStringLiteral("-idle.png"));
         overlay->close();
     }
 
