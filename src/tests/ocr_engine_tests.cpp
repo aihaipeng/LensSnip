@@ -80,6 +80,19 @@ void OcrEngine::testAlgorithms() {
     check(merged.size()==2 && merged[0].boundingRect()==QRectF(10,10,115,21)
               && merged[1].boundingRect()==QRectF(10,55,50,20),
           "same-row word boxes merge in reading order without merging another row");
+    const OcrResult cancelled = instance().detect(red,cancel);
+    check(cancelled.cancelled && cancelled.lines.isEmpty() && cancelled.boxes.isEmpty(),
+          "detect-only pre-cancellation returns no rows or boxes");
+    const OcrResult cancelledChunks = detectChunked(red,cancel);
+    check(cancelledChunks.cancelled && cancelledChunks.lines.isEmpty() && cancelledChunks.boxes.isEmpty(),
+          "chunked detect-only preserves cancellation semantics");
+    cancel->store(false);
+    const OcrResult invalidDetect = instance().detect(QImage(),cancel);
+    check(!invalidDetect.error.isEmpty() && invalidDetect.lines.isEmpty() && invalidDetect.boxes.isEmpty(),
+          "detect-only rejects empty images without recognition assets");
+    const OcrResult invalidChunks = detectChunked(QImage(),cancel);
+    check(!invalidChunks.error.isEmpty() && invalidChunks.lines.isEmpty() && invalidChunks.boxes.isEmpty(),
+          "chunked detect-only preserves empty-image errors");
     std::puts("PASS: OCR probability boxes, normalization, CTC, resize and cancellation checks");
 }
 

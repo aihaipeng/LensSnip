@@ -31,6 +31,7 @@ struct OcrLine {
 };
 struct OcrResult {
     QVector<OcrLine> lines;
+    QVector<QPolygonF> boxes;   // All detected line boxes in source-image coordinates, before recognition filtering.
     QString error;
     bool cancelled = false;
     qint64 elapsed = 0;
@@ -57,6 +58,10 @@ public:
     static int testLanguages(const QString &previewPath);
     static QSize detectionSize(const QSize &source);
     OcrResult recognize(QImage image, const OcrCancel &cancel);
+    OcrResult detect(QImage image, const OcrCancel &cancel);
+    // Recognition for boxes produced by detect(): one entry per box, in order.
+    // Boxes that cannot be read keep an empty text so callers can still cover them.
+    OcrResult recognizeBoxes(QImage image, const QVector<QPolygonF> &boxes, const OcrCancel &cancel);
     // centers: per QChar of the text, the middle of its CTC steps, in steps.
     static OcrLine decode(const QVector<float> &data, int steps, const QStringList &characters,
                           QVector<float> *centers = nullptr);
@@ -65,6 +70,8 @@ public:
     static QVector<QPolygonF> textBoxes(const QVector<float> &prob, const QSize &size, const QSize &original,
                                        const OcrCancel &cancel);
 private:
+    OcrResult detection(QImage image, const OcrCancel &cancel);
+    OcrLine recognizeLine(const QImage &image, const QPolygonF &box, const OcrCancel &cancel);
     static QVector<QPolygonF> mergeLineBoxes(QVector<QPolygonF> boxes);
     OcrEngine() = default;
     OcrEngine(const OcrEngine &) = delete;
@@ -90,5 +97,6 @@ private:
 
 // Row ends for splitting a tall image into recognition-sized chunks, preferring uniform rows.
 QVector<int> ocrCuts(const QImage &image, int limit);
-// Recognition for tall captures: each chunk keeps the OCR detector's native text size.
+// Tall captures keep the OCR detector's native text size in every chunk.
 OcrResult recognizeChunked(const QImage &image, const OcrCancel &cancel);
+OcrResult detectChunked(const QImage &image, const OcrCancel &cancel);

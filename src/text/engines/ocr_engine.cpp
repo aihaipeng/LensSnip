@@ -31,6 +31,9 @@
 
 OcrEngine &OcrEngine::instance() { static OcrEngine engine; return engine; }
 
+// Pins recognize in the background as soon as they open; lazy load/reset is not reentrant.
+static QMutex ocrSerial;
+
 OcrEngine::~OcrEngine()
 {
     // shortcut: leave the ORT DLL and sessions to process exit. FreeLibrary
@@ -123,10 +126,7 @@ QSize OcrEngine::detectionSize(const QSize &source) {
                  qMax(32, qRound(source.height() * ratio / 32) * 32));
 }
 
-OcrResult OcrEngine::recognize(QImage image, const OcrCancel &cancel) {
-    // Pins recognize in the background as soon as they open; lazy load/reset is not reentrant.
-    static QMutex serial;
-    const QMutexLocker lock(&serial);
+OcrResult OcrEngine::detection(QImage image, const OcrCancel &cancel) {
     OcrResult result;
     QElapsedTimer timer;
     timer.start();
@@ -146,35 +146,109 @@ OcrResult OcrEngine::recognize(QImage image, const OcrCancel &cancel) {
             || shape[2] <= 0 || shape[3] <= 0 || shape[2] > 1440 || shape[3] > 1440)
             throw std::runtime_error("Unexpected detection output shape");
         const QSize mapSize{int(shape[3]), int(shape[2])};
-        QVector<QPolygonF> boxes = textBoxes(probability, mapSize, image.size(), cancel);
-        for (const QPolygonF &box : boxes) {
-            if (cancel->load()) { result.cancelled = true; result.lines.clear(); return result; }
-            const QImage crop = lineImage(image, box);
-            if (crop.isNull()) continue;   // One degenerate box loses its line, not the whole page.
-            const int contentWidth = qMax(1, int(std::ceil(double(m_recHeight) * crop.width() / crop.height())));
-            const int width = qMax(320, (contentWidth + 31) / 32 * 32);
-            if (width > 8192) throw std::runtime_error("Text line is too wide; select a smaller region");
-            // Avoid area averaging fine text strokes when shrinking recognition rows.
-            QImage resized(contentWidth, m_recHeight, QImage::Format_RGB32);
-            if (resized.isNull()) throw std::runtime_error("Cannot resize a detected text line");
-            QPainter painter(&resized);
-            painter.setRenderHint(QPainter::SmoothPixmapTransform);
-            painter.drawImage(resized.rect(), crop);
-            painter.end();
-            const QVector<float> logits = run(m_rec, m_recInput, m_recOutput, normalized(resized, width),
-                                              {1, 3, m_recHeight, width}, shape);
-            if (shape.size() != 3 || shape[0] != 1 || shape[2] != m_characters.size())
-                throw std::runtime_error("Recognition output does not match its dictionary");
-            QVector<float> centers;
-            OcrLine line = decode(logits, int(shape[1]), m_characters, &centers);
-            line.box = box;
-            // A step spans width/steps input pixels; the line content fills the first contentWidth of them.
-            for (float &center : centers) center = center * width / float(shape[1]) / contentWidth;
-            line.glyphs = glyphBoxes(box, centers);
+        result.boxes = textBoxes(probability, mapSize, image.size(), cancel);
+        result.cancelled = cancel->load();
+        if (result.cancelled) result.boxes.clear();
+    } catch (const std::exception &error) {
+        result.lines.clear();
+        result.boxes.clear();
+        result.error = tr("识别失败：%1").arg(QString::fromUtf8(error.what()));
+    }
+    result.elapsed = timer.elapsed();
+    return result;
+}
+
+OcrResult OcrEngine::detect(QImage image, const OcrCancel &cancel) {
+    const QMutexLocker lock(&ocrSerial);
+    return detection(image, cancel);
+}
+
+OcrResult OcrEngine::recognize(QImage image, const OcrCancel &cancel) {
+    const QMutexLocker lock(&ocrSerial);
+    QElapsedTimer timer;
+    timer.start();
+    image.setDevicePixelRatio(1);   // Recognition crops read physical pixels; detection only resets its own copy.
+    OcrResult result = detection(image, cancel);
+    if (result.cancelled || !result.error.isEmpty()) return result;
+    try {
+        for (const QPolygonF &box : result.boxes) {
+            if (cancel->load()) {
+                result.cancelled = true;
+                result.lines.clear();
+                result.boxes.clear();
+                return result;
+            }
+            const OcrLine line = recognizeLine(image, box, cancel);
             if (!line.text.trimmed().isEmpty() && line.score >= 0.5f) result.lines.append(line);
         }
         result.cancelled = cancel->load();
-        if (result.cancelled) result.lines.clear();
+        if (result.cancelled) {
+            result.lines.clear();
+            result.boxes.clear();
+        }
+    } catch (const std::exception &error) {
+        result.lines.clear();
+        result.boxes.clear();
+        result.error = tr("识别失败：%1").arg(QString::fromUtf8(error.what()));
+    }
+    result.elapsed = timer.elapsed();
+    return result;
+}
+
+OcrLine OcrEngine::recognizeLine(const QImage &image, const QPolygonF &box, const OcrCancel &cancel)
+{
+    OcrLine line;
+    line.box = box;
+    if (cancel->load()) return line;
+    const QImage crop = lineImage(image, box);
+    if (crop.isNull()) return line;
+    const int contentWidth = qMax(1, int(std::ceil(double(m_recHeight) * crop.width() / crop.height())));
+    const int width = qMax(320, (contentWidth + 31) / 32 * 32);
+    if (width > 8192) throw std::runtime_error("Text line is too wide; select a smaller region");
+    QImage resized(contentWidth, m_recHeight, QImage::Format_RGB32);
+    if (resized.isNull()) throw std::runtime_error("Cannot resize a detected text line");
+    QPainter painter(&resized);
+    painter.setRenderHint(QPainter::SmoothPixmapTransform);
+    painter.drawImage(resized.rect(), crop);
+    painter.end();
+    QVector<int64_t> shape;
+    const QVector<float> logits = run(m_rec, m_recInput, m_recOutput, normalized(resized, width),
+                                      {1, 3, m_recHeight, width}, shape);
+    if (shape.size() != 3 || shape[0] != 1 || shape[2] != m_characters.size())
+        throw std::runtime_error("Recognition output does not match its dictionary");
+    QVector<float> centers;
+    line = decode(logits, int(shape[1]), m_characters, &centers);
+    line.box = box;
+    // A step spans width/steps input pixels; the line content fills the first contentWidth of them.
+    for (float &center : centers) center = center * width / float(shape[1]) / contentWidth;
+    line.glyphs = glyphBoxes(box, centers);
+    return line;
+}
+
+OcrResult OcrEngine::recognizeBoxes(QImage image, const QVector<QPolygonF> &boxes, const OcrCancel &cancel)
+{
+    const QMutexLocker lock(&ocrSerial);
+    QElapsedTimer timer;
+    timer.start();
+    OcrResult result;
+    image.setDevicePixelRatio(1);
+    result.error = load(QCoreApplication::applicationDirPath());
+    if (!result.error.isEmpty()) return result;
+    try {
+        result.lines.reserve(boxes.size());
+        for (const QPolygonF &box : boxes) {
+            if (cancel->load()) {
+                result.cancelled = true;
+                result.lines.clear();
+                return result;
+            }
+            OcrLine line = recognizeLine(image, box, cancel);
+            if (line.score < 0.5f) {
+                line.text.clear();
+                line.glyphs.clear();
+            }
+            result.lines.append(line);
+        }
     } catch (const std::exception &error) {
         result.lines.clear();
         result.error = tr("识别失败：%1").arg(QString::fromUtf8(error.what()));
@@ -345,24 +419,32 @@ QVector<int> ocrCuts(const QImage &image, int limit)
     return ends;
 }
 
-OcrResult recognizeChunked(const QImage &image, const OcrCancel &cancel)
+static OcrResult processChunked(const QImage &image, const OcrCancel &cancel, bool detectOnly)
 {
     if (image.isNull() || image.height() <= 1440)
-        return OcrEngine::instance().recognize(image, cancel);
+        return detectOnly ? OcrEngine::instance().detect(image, cancel)
+                          : OcrEngine::instance().recognize(image, cancel);
     QElapsedTimer timer;
     timer.start();
     OcrResult all;
     int top = 0;
     for (int end : ocrCuts(image, 1440)) {
-        const OcrResult part = OcrEngine::instance().recognize(image.copy(0, top, image.width(), end - top), cancel);
+        const QImage chunk = image.copy(0, top, image.width(), end - top);
+        const OcrResult part = detectOnly ? OcrEngine::instance().detect(chunk, cancel)
+                                          : OcrEngine::instance().recognize(chunk, cancel);
         if (part.cancelled) {
             all.cancelled = true;
             all.lines.clear();
+            all.boxes.clear();
             return all;
         }
         if (!part.error.isEmpty()) {
             all.error = part.error;
             return all;
+        }
+        for (QPolygonF box : part.boxes) {
+            box.translate(0, top);
+            all.boxes.append(box);
         }
         for (OcrLine line : part.lines) {
             line.box.translate(0, top);
@@ -373,6 +455,16 @@ OcrResult recognizeChunked(const QImage &image, const OcrCancel &cancel)
     }
     all.elapsed = timer.elapsed();
     return all;
+}
+
+OcrResult recognizeChunked(const QImage &image, const OcrCancel &cancel)
+{
+    return processChunked(image, cancel, false);
+}
+
+OcrResult detectChunked(const QImage &image, const OcrCancel &cancel)
+{
+    return processChunked(image, cancel, true);
 }
 
 void OcrEngine::checked(OrtStatus *status) {
