@@ -529,17 +529,49 @@ int CaptureOverlay::testCustomSize()
 
     overlay.m_sizeUnit = SizeUnit::Px;
     overlay.updateTip();
-    check(qAbs(overlay.m_sizeBar->geometry().center().x() - overlay.m_sel.center().x()) <= 1
+    check(qAbs(overlay.m_sizeBar->geometry().left() - overlay.m_sel.left()) <= 1
               && overlay.m_sizeBar->geometry().bottom() < overlay.m_sel.top(),
-          "the size strip is centered outside above the selection");
+          "the size strip sits above the selection, aligned to its left edge");
     const QRect savedSel = overlay.m_sel;
+    const QRect available = overlay.localScreenRect(
+        QGuiApplication::primaryScreen()->availableGeometry());
+    overlay.m_sel = QRect(QPoint(available.left() + 400, available.top()), QSize(200, 160));
+    overlay.updateTip();
+    check(overlay.m_sizeBar->geometry().right() < overlay.m_sel.left()
+              && overlay.m_sizeBar->geometry().top() == overlay.m_sel.top(),
+          "a top-edge size strip moves to the left side, aligned to the top edge");
     overlay.m_sel = overlay.rect();
     overlay.updateTip();
-    check(overlay.m_sizeBar->geometry().top() > overlay.m_sel.top()
-              && overlay.m_sizeBar->geometry().bottom() <= overlay.m_sel.bottom()
-              && qAbs(overlay.m_sizeBar->geometry().center().x() - overlay.m_sel.center().x()) <= 1,
-          "a full-screen size strip is centered inside the top edge");
+    check(overlay.m_sizeBar->geometry().topLeft() == overlay.m_sel.topLeft() + QPoint(6, 6),
+          "a full-screen size strip sits inside the top-left corner");
     overlay.m_sel = savedSel;
+    overlay.updateTip();
+    overlay.m_mode = Adjusting;
+    overlay.m_atool = ATool::None;
+    overlay.m_selAnn = -1;
+    overlay.m_lockAspect = false;
+    const QRect wheelBase = overlay.m_sel;
+    const auto sendWheel = [&overlay](const QPoint &at, int delta) {
+        QWheelEvent wheel(QPointF(at), QPointF(overlay.mapToGlobal(at)), QPoint(), QPoint(0, delta),
+                          Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase, false);
+        QApplication::sendEvent(&overlay, &wheel);
+    };
+    sendWheel(wheelBase.center(), 120);
+    check(overlay.m_sel == wheelBase.adjusted(-1, -1, 1, 1)
+              && overlay.m_sel.center() == wheelBase.center(),
+          "the wheel enlarges a locked frame by one pixel per side around its center");
+    sendWheel(wheelBase.center(), -120);
+    check(overlay.m_sel == wheelBase, "the wheel restores the locked frame size");
+    overlay.m_lockAspect = true;
+    overlay.m_aspect = 2.0;
+    sendWheel(wheelBase.center(), 120);
+    check(overlay.m_sel.width() == wheelBase.width() + 2
+              && overlay.m_sel.height() == qRound(overlay.m_sel.width() / 2.0)
+              && overlay.m_sel.center() == wheelBase.center(),
+          "the wheel still resizes when the aspect ratio is locked");
+    overlay.m_lockAspect = false;
+    overlay.m_aspect = 0;
+    overlay.m_sel = wheelBase;
     overlay.updateTip();
     const auto clickSizeLabel = [&overlay] {
         const QPoint at(2, 2);

@@ -25,6 +25,7 @@
 
 class QMenu;
 class QLabel;
+class QTimer;
 
 // ---------- Pinned image window ----------
 class PinWindow : public QWidget
@@ -129,6 +130,8 @@ private:
     bool m_ocrRunning = false;
     QString m_textOcrError;
     QLabel *m_textStatus = nullptr;
+    QLabel *m_scaleBadge = nullptr;   // Percentage shown at the image's top-left while wheeling.
+    QTimer *m_scaleBadgeTimer = nullptr;
     bool m_ocrTipShown = false;
     int m_ocrGen = 0;
     OcrCancel m_ocrCancel;

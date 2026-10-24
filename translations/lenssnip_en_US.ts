@@ -1768,6 +1768,10 @@ Put the runtime and models back in the program folder and try again.</translatio
 <context>
     <name>PinWindow</name>
     <message>
+        <source>大小: %1%</source>
+        <translation>Size: %1%</translation>
+    </message>
+    <message>
         <source>识别失败：%1</source>
         <translation>Recognition failed: %1</translation>
     </message>

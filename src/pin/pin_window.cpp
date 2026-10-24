@@ -72,6 +72,17 @@ PinWindow::PinWindow(const QPixmap &pix, const QRect &displayRect)
         "QLabel{background:rgba(24,25,29,232);color:#9c9da1;border:1px solid #2b2d33;"
         "border-radius:6px;padding:4px 8px;font-size:12px;}"));
     m_textStatus->hide();
+    m_scaleBadge = new QLabel(this);
+    m_scaleBadge->setObjectName(QStringLiteral("pinScaleBadge"));
+    m_scaleBadge->setAttribute(Qt::WA_TransparentForMouseEvents);
+    m_scaleBadge->setStyleSheet(QStringLiteral(
+        "QLabel{background:rgba(24,25,29,232);color:#f4f5f8;border:1px solid #2b2d33;"
+        "border-radius:4px;padding:2px 6px;font-size:12px;}"));
+    m_scaleBadge->hide();
+    m_scaleBadgeTimer = new QTimer(this);
+    m_scaleBadgeTimer->setSingleShot(true);
+    m_scaleBadgeTimer->setInterval(1000);
+    connect(m_scaleBadgeTimer, &QTimer::timeout, m_scaleBadge, &QWidget::hide);
     setAttribute(Qt::WA_TranslucentBackground);   // The shadow band is painted, per-pixel alpha.
     setImageGeometry(displayRect);
     toggleTextSelectable(true);   // Text is selectable by default (user requirement).
@@ -135,6 +146,7 @@ QImage PinWindow::shadowImage(const QSize &window, const QColor &color, qreal dp
 void PinWindow::applyProcessedImage()
 {
     if (m_originalPix.isNull()) return;
+    if (m_scaleBadge) m_scaleBadge->hide();
     QImage img = m_originalPix.toImage().convertToFormat(QImage::Format_ARGB32);
 
     // 1. Invert colors if requested
@@ -1408,20 +1420,27 @@ void PinWindow::wheelEvent(QWheelEvent *e)       // Zoom with mouse-wheel input.
 {
     if (!e->angleDelta().y()) return;
     bakeAnnotations();   // Marks composite into pixels before resampling.
-    const double f = e->angleDelta().y() > 0 ? 1.1 : 1 / 1.1;
-    m_scale = qBound(1.0 / qMax(m_pix.width(), m_pix.height()), m_scale * f, 32.0);
-    // Keep the cursor position anchored while zooming.
-    const QPoint a = e->globalPosition().toPoint();
-    const QRect ig = imageGeometry();
+    // Zoom on a 10% grid: one notch moves to the next or previous 10% step.
+    const int unit = e->angleDelta().y() > 0
+        ? int(std::floor(m_scale * 10.0 + 1e-6)) + 1
+        : int(std::ceil(m_scale * 10.0 - 1e-6)) - 1;
+    m_scale = qBound(1.0 / qMax(m_pix.width(), m_pix.height()), unit / 10.0, 32.0);
+    const QRect before = imageGeometry();
     const QSize ns(qMax(1, qRound(m_pix.width() * m_scale)), qMax(1, qRound(m_pix.height() * m_scale)));
-    QPoint np(a.x() - double(a.x() - ig.x()) / ig.width() * ns.width(),
-              a.y() - double(a.y() - ig.y()) / ig.height() * ns.height());
-    setImageGeometry(QRect(np, ns));
+    setImageGeometry(QRect(before.topLeft(), ns));   // Zoom grows from the top-left corner.
     if (m_canvas) {
         m_canvas->setGeometry(imageRect());
         m_canvas->setImage(displayImage());
     }
     updateToolbarPosition();
+    if (m_scaleBadge) {
+        m_scaleBadge->setText(tr("大小: %1%").arg(qRound(m_scale * 100.0)));
+        m_scaleBadge->adjustSize();
+        m_scaleBadge->move(imageRect().topLeft() + QPoint(2, 2));
+        m_scaleBadge->show();
+        m_scaleBadge->raise();
+        if (m_scaleBadgeTimer) m_scaleBadgeTimer->start();
+    }
 }
 
 void PinWindow::mouseDoubleClickEvent(QMouseEvent *e)

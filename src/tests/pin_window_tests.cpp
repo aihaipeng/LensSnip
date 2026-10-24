@@ -63,10 +63,12 @@ int PinWindow::testPlacement()
     QWheelEvent wheel(QPointF(anchor - source.topLeft()), QPointF(anchor), QPoint(), QPoint(0, 120),
                       Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase, false);
     QApplication::sendEvent(&pin, &wheel);
-    check(pin.imageRect().size() == QSize(660, 440)
-              && qAbs(double(anchor.x() - pin.imageGeometry().x()) / pin.imageGeometry().width()
-                       - double(anchor.x() - source.x()) / source.width()) < 0.003,
-          "wheel zoom starts from the displayed DPI scale and retains the cursor anchor");
+    auto *scaleBadge = pin.findChild<QLabel *>(QStringLiteral("pinScaleBadge"));
+    check(pin.imageRect().size() == QSize(630, 420)
+              && pin.imageGeometry().topLeft() == source.topLeft()
+              && scaleBadge && scaleBadge->isVisible()
+              && scaleBadge->text() == QStringLiteral("大小: 70%"),
+          "wheel zoom moves to the next 10% step, keeps the top-left origin and shows the percentage");
     pin.close();
     QPixmap highDpiPixels(900, 600);
     highDpiPixels.fill(Qt::green);

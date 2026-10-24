@@ -1704,6 +1704,10 @@
 <context>
     <name>PinWindow</name>
     <message>
+        <source>大小: %1%</source>
+        <translation>大小: %1%</translation>
+    </message>
+    <message>
         <source>识别失败：%1</source>
         <translation>识别失败：%1</translation>
     </message>

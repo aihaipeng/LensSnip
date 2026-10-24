@@ -171,11 +171,11 @@ CaptureOverlay::CaptureOverlay(const QVector<ScreenFrame> &frames,
     m_sizeBar->setObjectName(QStringLiteral("sizeBar"));
     m_sizeBar->setFixedHeight(32);
     m_sizeBar->setStyleSheet(QStringLiteral(
-        "QWidget#sizeBar{background:#18191d;border:1px solid #2b2d33;border-radius:8px;}"
+        "QWidget#sizeBar{background:#18191d;border:1px solid #2b2d33;border-radius:0;}"
         "QLabel{color:#f4f5f8;background:transparent;border:none;font-size:14px;padding:0 9px;}"
         "QToolButton{color:#f4f5f8;background:transparent;border:none;font-size:13px;padding:0;text-align:center;}"
-        "QToolButton:hover{background:#222326;border-radius:6px;}"
-        "QToolButton:pressed{background:#2b2d33;border-radius:6px;}"
+        "QToolButton:hover{background:#222326;border-radius:0;}"
+        "QToolButton:pressed{background:#2b2d33;border-radius:0;}"
         "QFrame#sizeBarDivider{background:#2b2d33;border:none;}"));
     auto *sizeBarLayout = new QHBoxLayout(m_sizeBar);
     sizeBarLayout->setContentsMargins(0, 0, 0, 0);
@@ -1180,6 +1180,32 @@ void CaptureOverlay::wheelEvent(QWheelEvent *e)
         setAutoMosaicStrength(m_autoMosaicStrength + (e->angleDelta().y() > 0 ? 1 : -1));
         return;
     }
+    if (m_mode == Adjusting && m_drag == H_None && m_itemDrag == H_None
+        && m_selAnn < 0 && m_atool == ATool::None && !m_sel.isNull()
+        && !m_live && !m_pinEdit) {
+        // Locked frame: one notch adds or removes one pixel per side around the
+        // center. The aspect lock only constrains the other dimension; it never
+        // blocks the wheel resize itself.
+        const int step = e->angleDelta().y() > 0 ? 1 : -1;
+        const QPoint center = m_sel.center();
+        QRect next = m_sel.adjusted(-step, -step, step, step);
+        if (next.width() >= 2 && next.height() >= 2) {
+            if (m_lockAspect && m_aspect > 0)
+                next.setHeight(qMax(2, qRound(next.width() / m_aspect)));
+            next.moveCenter(center);
+            next = next.intersected(rect());
+            if (next.width() >= 2 && next.height() >= 2) {
+                cancelDetection();
+                m_sel = next;
+                placeToolBars();
+                showToolBars();
+                updateTip();
+                update();
+                updateInspector();
+            }
+        }
+        return;
+    }
     if (m_mode == Adjusting && m_drag == H_None && m_itemDrag == H_None) {
         tuneWidth(e->angleDelta().y() > 0 ? 1 : -1, e->position().toPoint());
         if (m_selAnn >= 0 || m_atool != ATool::None) return;
@@ -2071,7 +2097,6 @@ void CaptureOverlay::updateTip()
     const QRect bounds = fullScreen ? rect()
         : localScreenRect((screen ? screen : QGuiApplication::primaryScreen())
             ->availableGeometry()).intersected(rect());
-    const bool hasTopBar = !m_pinEdit && m_toolsTop && m_toolsTop->isVisible();
     const auto clear = [this, &bounds](const QRect &candidate) {
         if (!bounds.contains(candidate)) return false;
         if (!m_layoutCardRect.isNull() && candidate.intersects(m_layoutCardRect)) return false;
@@ -2083,24 +2108,23 @@ void CaptureOverlay::updateTip()
             && candidate.intersects(m_morePanel->geometry())) return false;
         return true;
     };
+    // The size strip belongs to the region's top-left corner: above the region
+    // with both left edges aligned, then to its left when the top edge reaches
+    // the screen, then to the right, then inside as a last resort.
     QVector<QRect> candidates;
-    if (hasTopBar) {
-        const QRect bar = m_toolsTop->geometry();
-        const int centerY = bar.top() + (bar.height() - size.height()) / 2;
-        candidates << QRect(QPoint(bar.left() - gap - size.width(), centerY), size)
-                   << QRect(QPoint(bar.left(), bar.top() - gap - size.height()), size)
-                   << QRect(QPoint(bar.left(), bar.bottom() + 1 + gap), size)
-                   << QRect(QPoint(bar.right() + 1 + gap, centerY), size);
-    } else {
-        const int centeredX = qBound(bounds.left(),
-                                     r.center().x() - size.width() / 2,
-                                     qMax(bounds.left(), bounds.right() + 1 - size.width()));
-        candidates << QRect(QPoint(centeredX,
-                                   fullScreen ? r.top() + gap
-                                              : r.top() - gap - size.height()), size)
-                   << QRect(QPoint(centeredX, r.bottom() + 1 + gap), size)
-                   << QRect(QPoint(centeredX, r.top() + gap), size);
-    }
+    const int cornerX = qBound(bounds.left(), r.left(),
+                               qMax(bounds.left(), bounds.right() + 1 - size.width()));
+    const int cornerY = qBound(bounds.top(), r.top(),
+                               qMax(bounds.top(), bounds.bottom() + 1 - size.height()));
+    const QRect above(QPoint(cornerX, r.top() - gap - size.height()), size);
+    const QRect left(QPoint(r.left() - gap - size.width(), cornerY), size);
+    const QRect right(QPoint(r.right() + 1 + gap, cornerY), size);
+    const QRect below(QPoint(cornerX, r.bottom() + 1 + gap), size);
+    const QRect inside(QPoint(r.left() + gap, r.top() + gap), size);
+    if (fullScreen)
+        candidates << inside << below;
+    else
+        candidates << above << left << right << below << inside;
     QVector<int> xs{candidates.first().x(), bounds.left(), bounds.right() + 1 - size.width(),
                     r.left() - gap - size.width(), r.right() + 1 + gap};
     QVector<int> ys{candidates.first().y(), bounds.top(), bounds.bottom() + 1 - size.height(),
