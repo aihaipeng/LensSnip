@@ -269,28 +269,12 @@
         <translation>自动马赛克：识别文字、二维码、图片等元素，点击遮挡</translation>
     </message>
     <message>
-        <source>正在扫描选区</source>
-        <translation>正在扫描选区</translation>
+        <source>联动遮挡</source>
+        <translation>联动遮挡</translation>
     </message>
     <message>
-        <source>识别文字、二维码与图像元素</source>
-        <translation>识别文字、二维码与图像元素</translation>
-    </message>
-    <message>
-        <source>发现 %1 处可遮挡内容</source>
-        <translation>发现 %1 处可遮挡内容</translation>
-    </message>
-    <message>
-        <source>悬停查看，点击遮挡</source>
-        <translation>悬停查看，点击遮挡</translation>
-    </message>
-    <message>
-        <source>已遮挡 %1/%2</source>
-        <translation>已遮挡 %1/%2</translation>
-    </message>
-    <message>
-        <source>同步操作</source>
-        <translation>同步操作</translation>
+        <source>点击一处，相同邮箱、手机号、二维码或图片一起遮挡/恢复</source>
+        <translation>点击一处，相同邮箱、手机号、二维码或图片一起遮挡/恢复</translation>
     </message>
     <message>
         <source>模糊</source>

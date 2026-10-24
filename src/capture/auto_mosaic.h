@@ -33,4 +33,7 @@ Kind classify(const QString &text);
 // Blocking worker: run it off the GUI thread. Honours `cancel` between stages.
 Result detect(const QImage &image, const std::shared_ptr<std::atomic_bool> &cancel = {});
 
+// Self-check for the tiled candidate merge; needs no OCR assets.
+bool testMerging();
+
 }

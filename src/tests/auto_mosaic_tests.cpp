@@ -3,7 +3,6 @@
 #include "tests/test_support.h"
 #include "text/engines/ocr_engine.h"
 #include <QApplication>
-#include <QCheckBox>
 #include <QComboBox>
 #include <QCoreApplication>
 #include <QEvent>
@@ -26,7 +25,7 @@
 
 // Covers the auto mosaic tool: identifier classification, QR detection, the
 // standalone toolbar entry, the auto-only options strip, hover/click toggling,
-// synchronous blocks and the manual drag fallback.
+// linked blocks and the manual drag fallback.
 namespace {
 void check(bool ok, const char *message)
 {
@@ -64,6 +63,7 @@ bool waitUntil(const std::function<bool()> &done, int timeout = 20000)
 int CaptureOverlay::testAutoMosaic(const QString &previewPath)
 {
     using AutoMosaic::Kind;
+    check(AutoMosaic::testMerging(), "tiled candidates merge into whole lines");
     {   // Identifier classification: only actual privacy text is covered.
         check(AutoMosaic::classify(QStringLiteral("+86-13800138000")) == Kind::Phone,
               "CN mobile numbers classify as phone");
@@ -168,6 +168,48 @@ int CaptureOverlay::testAutoMosaic(const QString &previewPath)
             }
             check(tiledEmail > 0 && tiledUrl > 0,
                   "wide captures keep identifiers in both tiles");
+
+            // A line straddling a horizontal tile seam must survive as one complete
+            // block, not as the half detected in the tile above the seam.
+            QImage seam(1600, 2200, QImage::Format_RGB32);
+            seam.fill(Qt::white);
+            {
+                QPainter p(&seam);
+                QFont font(QStringLiteral("Arial"));
+                font.setPixelSize(32);
+                p.setFont(font);
+                p.setPen(Qt::black);
+                p.drawText(100, 1415, QStringLiteral("alice.brown927@qq.com"));
+            }
+            const AutoMosaic::Result seamResult = AutoMosaic::detect(seam);
+            int seamEmail = 0;
+            QRect seamBlock;
+            for (const AutoMosaic::Detected &block : seamResult.blocks)
+                if (block.kind == Kind::Email) { ++seamEmail; seamBlock = block.rect; }
+            check(seamEmail == 1, "a line across a horizontal tile seam stays one block");
+            check(seamBlock.height() >= 30, "the seam block covers the whole line");
+
+            // A link longer than one tile is split by two seams; merging must
+            // reunite it before recognition so it still classifies as a URL.
+            QImage longUrl(3200, 500, QImage::Format_RGB32);
+            longUrl.fill(Qt::white);
+            {
+                QPainter p(&longUrl);
+                QFont font(QStringLiteral("Arial"));
+                font.setPixelSize(28);
+                p.setFont(font);
+                p.setPen(Qt::black);
+                p.drawText(1300, 180, QStringLiteral(
+                    "https://example.com/reports/2026/october/quarterly-summary/department/"
+                    "finance/archive/download?id=1234567890"));
+            }
+            const AutoMosaic::Result longResult = AutoMosaic::detect(longUrl);
+            int longUrlCount = 0;
+            QRect longUrlBlock;
+            for (const AutoMosaic::Detected &block : longResult.blocks)
+                if (block.kind == Kind::Url) { ++longUrlCount; longUrlBlock = block.rect; }
+            check(longUrlCount == 1, "a link across two tile seams stays one block");
+            check(longUrlBlock.width() >= 1350, "the merged link covers the whole line");
         }
     }
 
@@ -195,10 +237,11 @@ int CaptureOverlay::testAutoMosaic(const QString &previewPath)
             check(waitUntil([&overlay] { return !overlay->m_autoPending; }),
                   "the overlay scan finishes");
             check(overlay->m_autoReveal, "the result frames are revealed as one batch");
-            check(overlay->m_autoCountLabel && !overlay->m_autoCountLabel->isHidden(),
-                  "the auto strip shows the covered count");
             check(waitUntil([&overlay] { return !overlay->m_autoReveal; }, 5000),
                   "the result frames stay visible for two seconds");
+            check(overlay->m_autoMosaic, "auto mode stays active after the batch reveal");
+            check(overlay->m_autoLinkButton != nullptr,
+                  "the auto strip stays available after detection");
             const Annotation *found = overlay->autoMosaicAnnotation();
             check(found && found->autoBlocks.size() >= 2,
                   "activation installs the recognized blocks");
@@ -210,16 +253,21 @@ int CaptureOverlay::testAutoMosaic(const QString &previewPath)
                 if (block.key.startsWith(QStringLiteral("url:"))) ++url;
             }
             check(email > 0 && url > 0, "the overlay keeps e-mail and link blocks");
+            const int cachedCount = found->autoBlocks.size();
+            overlay->selectMosaicMode(false);
+            overlay->selectAutoMosaic();
+            check(!overlay->m_autoPending,
+                  "returning to auto mode reuses the cached scan");
+            found = overlay->autoMosaicAnnotation();
+            check(found && found->autoBlocks.size() == cachedCount,
+                  "the cached candidates survive a tool switch");
             const QPoint at = found->autoBlocks.first().rect.center();
-            const QString countBefore = overlay->m_autoCountLabel->text();
             QMouseEvent click = mouse(QEvent::MouseButtonPress, at, Qt::LeftButton, Qt::LeftButton);
             QMouseEvent up = mouse(QEvent::MouseButtonRelease, at, Qt::LeftButton, Qt::NoButton);
             overlay->mousePressEvent(&click);
             overlay->mouseReleaseEvent(&up);
             check(overlay->autoMosaicAnnotation()->autoBlocks.first().included,
                   "clicking a candidate applies its mosaic");
-            check(overlay->m_autoCountLabel->text() != countBefore,
-                  "clicking updates the covered count");
             overlay->mousePressEvent(&click);
             overlay->mouseReleaseEvent(&up);
             check(!overlay->autoMosaicAnnotation()->autoBlocks.first().included,
@@ -266,10 +314,14 @@ int CaptureOverlay::testAutoMosaic(const QString &previewPath)
               "the sub-strip entry arms the mosaic tool in auto mode");
         check(overlay->m_autoMosaicButton != nullptr && overlay->m_autoMosaicButton->isChecked(),
               "the sub-strip entry highlights while active");
+        QToolButton *linkButton = overlay->m_toolOptions->findChild<QToolButton *>(
+            QStringLiteral("autoMosaicLink"));
         check(overlay->m_toolOptions->findChild<QComboBox *>(QStringLiteral("autoMosaicMode"))
                   && overlay->m_toolOptions->findChild<QSlider *>(QStringLiteral("autoMosaicStrength"))
-                  && overlay->m_toolOptions->findChild<QCheckBox *>(QStringLiteral("autoMosaicSync")),
-              "the auto strip exposes mode, strength and sync");
+                  && linkButton,
+              "the auto strip exposes mode, strength and link toggling");
+        check(linkButton->isChecked() && linkButton->text() == QStringLiteral("联动遮挡"),
+              "link toggling is one button and defaults on");
         check(overlay->m_toolOptions->findChild<QToolButton *>(QStringLiteral("autoMosaic")),
               "the auto strip keeps its mode button visible for leaving");
         overlay->selectMosaicMode(false);
@@ -318,6 +370,62 @@ int CaptureOverlay::testAutoMosaic(const QString &previewPath)
               "a canvas click toggles only the block under the pointer");
         overlay->undoAnnotation();
 
+        // A box over detected text toggles that text block instead of painting a
+        // solid rectangle; starting the box also retires the candidate hover frame.
+        overlay->m_autoMosaic = true;
+        overlay->m_atool = ATool::Mosaic;
+        overlay->m_mode = Adjusting;
+        overlay->m_anns[0].autoBlocks[0].included = false;
+        overlay->m_autoHoverAnn = -1;
+        overlay->m_autoHoverBlock = -1;
+        overlay->m_autoReveal = false;
+        QMouseEvent hoverCandidate(QEvent::MouseMove, QPointF(80, 55), Qt::NoButton, Qt::NoButton,
+                                   Qt::NoModifier);
+        overlay->mouseMoveEvent(&hoverCandidate);
+        check(overlay->m_autoHoverAnn == 0, "a candidate hover is active before the box drag");
+        const int boxedBefore = overlay->m_anns[0].autoBlocks.size();
+        QMouseEvent boxPress = mouse(QEvent::MouseButtonPress, QPoint(30, 30), Qt::LeftButton, Qt::LeftButton);
+        QMouseEvent boxMove = mouse(QEvent::MouseMove, QPoint(320, 90), Qt::NoButton, Qt::LeftButton);
+        QMouseEvent boxRelease = mouse(QEvent::MouseButtonRelease, QPoint(320, 90), Qt::LeftButton, Qt::NoButton);
+        overlay->mousePressEvent(&boxPress);
+        check(overlay->m_autoHoverAnn == -1, "starting a box retires the candidate hover frame");
+        QImage traceLayer(500, 300, QImage::Format_ARGB32_Premultiplied);
+        traceLayer.fill(Qt::transparent);
+        {
+            QPainter painter(&traceLayer);
+            overlay->paintAutoMosaicOverlay(painter);
+        }
+        check(qAlpha(traceLayer.pixel(40, 40)) == 0,
+              "starting a box removes the old hover frame from the window");
+        overlay->mouseMoveEvent(&boxMove);
+        overlay->mouseReleaseEvent(&boxRelease);
+        check(overlay->m_anns[0].autoBlocks.size() == boxedBefore,
+              "a box over text includes the text block without adding a rectangle");
+        check(overlay->m_anns[0].autoBlocks[0].included,
+              "the text inside the box is mosaicked");
+        overlay->undoAnnotation();
+        check(!overlay->m_anns[0].autoBlocks[0].included,
+              "undo restores the boxed text toggle");
+
+        // A drag that starts on a candidate becomes a box instead of a dead gesture.
+        overlay->m_anns[0].autoBlocks[0].included = false;
+        overlay->m_anns[0].autoBlocks[1].included = false;
+        QMouseEvent fromCandidatePress = mouse(QEvent::MouseButtonPress, QPoint(80, 55),
+                                               Qt::LeftButton, Qt::LeftButton);
+        QMouseEvent fromCandidateMove = mouse(QEvent::MouseMove, QPoint(320, 200),
+                                              Qt::NoButton, Qt::LeftButton);
+        QMouseEvent fromCandidateRelease = mouse(QEvent::MouseButtonRelease, QPoint(320, 200),
+                                                 Qt::LeftButton, Qt::NoButton);
+        overlay->mousePressEvent(&fromCandidatePress);
+        overlay->mouseMoveEvent(&fromCandidateMove);
+        check(overlay->m_autoDragging && overlay->m_autoHoverAnn == -1,
+              "a drag from a candidate becomes a box and retires its hover frame");
+        overlay->mouseReleaseEvent(&fromCandidateRelease);
+        check(overlay->m_anns[0].autoBlocks[0].included
+                  && overlay->m_anns[0].autoBlocks[1].included,
+              "the box started on a candidate mosaics the text it covers");
+        overlay->undoAnnotation();
+
         // Drag on empty canvas adds one manual block; undo removes it.
         const int before = overlay->m_anns[0].autoBlocks.size();
         QMouseEvent dragPress = mouse(QEvent::MouseButtonPress, QPoint(500, 400), Qt::LeftButton, Qt::LeftButton);
@@ -330,12 +438,23 @@ int CaptureOverlay::testAutoMosaic(const QString &previewPath)
               "dragging on the canvas adds a manual block");
         check(overlay->m_anns[0].autoBlocks.last().key.isEmpty(),
               "manual blocks are outside the sync groups");
+        const QPoint manualAt = overlay->m_anns[0].autoBlocks.last().rect.center();
+        QMouseEvent manualPress = mouse(QEvent::MouseButtonPress, manualAt, Qt::LeftButton, Qt::LeftButton);
+        QMouseEvent manualRelease = mouse(QEvent::MouseButtonRelease, manualAt, Qt::LeftButton, Qt::NoButton);
+        overlay->mousePressEvent(&manualPress);
+        overlay->mouseReleaseEvent(&manualRelease);
+        check(!overlay->m_anns[0].autoBlocks.last().included,
+              "clicking a manual block removes its mosaic");
+        overlay->undoAnnotation();
+        check(overlay->m_anns[0].autoBlocks.last().included,
+              "undo restores the manual block mosaic");
         overlay->undoAnnotation();
         check(overlay->m_anns[0].autoBlocks.size() == before,
-              "one undo removes the manual block");
+              "one more undo removes the manual block");
 
         // Per-block effect images are reused between repaints instead of being
         // rebuilt from the full capture on every click.
+        overlay->m_anns[0].autoBlocks[0].included = true;
         QImage source = overlay->m_shot.toImage().convertToFormat(QImage::Format_ARGB32);
         source.setDevicePixelRatio(1);
         QImage target(500, 300, QImage::Format_ARGB32_Premultiplied);

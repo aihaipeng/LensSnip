@@ -3,11 +3,9 @@
 #include "shared/settings.h"
 #include "text/engines/barcode_engine.h"
 #include "text/engines/ocr_engine.h"
-#include <QFontMetrics>
 #include <QFutureWatcher>
 #include <QLinearGradient>
 #include <QPainter>
-#include <QPainterPath>
 #include <QRandomGenerator>
 #include <QRegularExpression>
 #include <QtConcurrent>
@@ -62,6 +60,101 @@ bool overlapsMostly(const QRect &a, const QRect &b)
     if (both.isEmpty()) return false;
     const qint64 smaller = qMin(qint64(a.width()) * a.height(), qint64(b.width()) * b.height());
     return smaller > 0 && qint64(both.width()) * both.height() * 10 >= smaller * 7;
+}
+
+qint64 boxArea(const QRect &rect)
+{
+    return qint64(rect.width()) * rect.height();
+}
+
+// One detection box plus the tile that produced it. Seams between overlapping
+// tiles clip a line into half boxes; the merge below keeps the complete box or
+// unites two complementary halves before recognition.
+struct Candidate {
+    QRect rect;
+    QPolygonF box;
+    int tile = -1;
+    int pieces = 1;
+    bool top = false, bottom = false, left = false, right = false;
+    bool clipped() const { return top || bottom || left || right; }
+};
+
+bool sameRow(const QRect &a, const QRect &b)
+{
+    const int overlap = qMin(a.bottom(), b.bottom()) - qMax(a.top(), b.top()) + 1;
+    const int shorter = qMin(a.height(), b.height()), taller = qMax(a.height(), b.height());
+    return shorter > 0 && overlap * 5 >= shorter * 3 && taller <= shorter * 2;
+}
+
+bool sameColumn(const QRect &a, const QRect &b)
+{
+    const int overlap = qMin(a.right(), b.right()) - qMax(a.left(), b.left()) + 1;
+    const int shorter = qMin(a.width(), b.width()), wider = qMax(a.width(), b.width());
+    return shorter > 0 && overlap * 5 >= shorter * 3 && wider <= shorter * 2;
+}
+
+bool uniteHalves(const Candidate &a, const Candidate &b, const QVector<QRect> &tiles, QRect *united)
+{
+    if (a.tile < 0 || b.tile < 0 || a.tile == b.tile || a.pieces + b.pieces > 3) return false;
+    if (!tiles[a.tile].intersects(tiles[b.tile])) return false;
+    const bool horizontal = (a.left && b.right) || (b.left && a.right);
+    const bool vertical = (a.top && b.bottom) || (b.top && a.bottom);
+    if (!horizontal && !vertical) return false;
+    if (horizontal && !sameRow(a.rect, b.rect)) return false;
+    if (vertical && !sameColumn(a.rect, b.rect)) return false;
+    if (a.rect.intersected(b.rect).isEmpty()) return false;
+    const QRect both = a.rect.united(b.rect);
+    if (boxArea(both) > (boxArea(a.rect) + boxArea(b.rect)) * 2) return false;
+    *united = both;
+    return true;
+}
+
+QVector<Candidate> mergeCandidates(QVector<Candidate> candidates, const QVector<QRect> &tiles)
+{
+    // Complete boxes win over boxes trimmed by an artificial tile seam; ties keep
+    // the larger box, then the earlier tile for deterministic output.
+    std::stable_sort(candidates.begin(), candidates.end(), [](const Candidate &a, const Candidate &b) {
+        if (a.clipped() != b.clipped()) return !a.clipped();
+        const qint64 left = boxArea(a.rect), right = boxArea(b.rect);
+        if (left != right) return left > right;
+        return a.tile < b.tile;
+    });
+    QVector<Candidate> merged;
+    for (Candidate next : candidates) {
+        bool duplicate = false;
+        for (Candidate &kept : merged) {
+            QRect united;
+            if (uniteHalves(kept, next, tiles, &united)) {
+                kept.rect = united;
+                kept.box = QPolygonF(QRectF(united));
+                kept.top = kept.top || next.top;
+                kept.bottom = kept.bottom || next.bottom;
+                kept.left = kept.left || next.left;
+                kept.right = kept.right || next.right;
+                kept.pieces += next.pieces;
+                duplicate = true;
+                break;
+            }
+            const QRect both = kept.rect.intersected(next.rect);
+            if (both.isEmpty()) continue;
+            const qint64 smaller = qMin(boxArea(kept.rect), boxArea(next.rect));
+            if (boxArea(both) * 10 < smaller * 8) continue;   // Different lines that only graze.
+            duplicate = true;
+            break;
+        }
+        if (!duplicate) merged.append(next);
+    }
+    return merged;
+}
+
+QRect paddedBox(const QRect &rect, const QRect &bounds, int pad)
+{
+    return rect.adjusted(-pad, -pad, pad, pad).intersected(bounds);
+}
+
+int textPadding(const QRect &rect)
+{
+    return qMax(2, qRound(rect.height() * 0.08));
 }
 
 quint64 imageHash(const QImage &image, const QRect &rect)
@@ -195,31 +288,20 @@ AutoMosaic::Result AutoMosaic::detect(const QImage &image, const std::shared_ptr
     const auto activeCancel = cancel ? cancel : std::make_shared<std::atomic_bool>(false);
 
     // Text identifiers. A busy OCR card owns the engine; the QR pass still runs.
-    // Large captures are tiled so the detector keeps text at native size instead
-    // of shrinking a 4K window to the 1440 px limit.
+    // large captures are tiled so the detector keeps text at native size instead
+    // of shrinking a 4K window to the 1440 px limit. Boxes from every tile are
+    // merged in full-image coordinates before recognition.
     auto &engine = OcrEngine::instance();
     bool expected = false;
     if (engine.busy.compare_exchange_strong(expected, true)) {
-        const auto addLines = [&result, &bounds](const OcrResult &ocr, const QPoint &offset) {
-            for (const OcrLine &line : ocr.lines) {
-                const QString text = line.text.trimmed();
-                if (text.isEmpty()) continue;
-                // Every recognized text line is a selectable element; the privacy
-                // kinds only decide which lines share a sync key.
-                const Kind kind = classify(text);
-                const QRect box = line.box.boundingRect().toAlignedRect().translated(offset).intersected(bounds);
-                if (box.width() < 6 || box.height() < 6) continue;
-                const QString key = kind == Kind::None
-                    ? QStringLiteral("text:") + text.toLower() : keyFor(kind, text);
-                bool duplicate = false;
-                for (const Detected &seen : result.blocks)
-                    if (overlapsMostly(seen.rect, box)) { duplicate = true; break; }
-                if (!duplicate) result.blocks.append({box, key, kind});
-            }
-        };
-        const int maxTile = 1400, overlap = 320;
+        constexpr int maxTile = 1400, overlap = 320;
+        const bool single = image.width() <= maxTile
+            || qMax(image.width(), image.height()) <= 2000;
         QVector<QRect> tiles;
-        if (qMax(image.width(), image.height()) > 2000) {
+        if (single) {
+            // A narrow tall capture is chunked at blank rows, never at an x seam.
+            tiles.append(bounds);
+        } else {
             for (int y = 0; y < image.height();) {
                 const int h = qMin(maxTile, image.height() - y);
                 for (int x = 0; x < image.width();) {
@@ -231,23 +313,64 @@ AutoMosaic::Result AutoMosaic::detect(const QImage &image, const std::shared_ptr
                 if (y + h >= image.height()) break;
                 y += maxTile - overlap;
             }
-        } else {
-            tiles.append(bounds);
         }
-        for (const QRect &tile : tiles) {
-            if (activeCancel->load()) break;
+        QVector<Candidate> candidates;
+        for (int t = 0; t < tiles.size() && !activeCancel->load(); ++t) {
+            const QRect tile = tiles[t];
             QImage part = image.copy(tile);
             part.setDevicePixelRatio(1);
             try {
-                const OcrResult ocr = recognizeChunked(part, activeCancel);
+                const OcrResult ocr = detectChunked(part, activeCancel);
+                if (ocr.cancelled) break;
                 if (!ocr.error.isEmpty()) { result.error = ocr.error; break; }
-                addLines(ocr, tile.topLeft());
+                for (const QPolygonF &box : ocr.boxes) {
+                    const QRect local = box.boundingRect().toAlignedRect();
+                    if (local.width() < 6 || local.height() < 6) continue;
+                    Candidate candidate;
+                    candidate.rect = local.translated(tile.topLeft()).intersected(bounds);
+                    if (candidate.rect.width() < 6 || candidate.rect.height() < 6) continue;
+                    candidate.box = box;
+                    candidate.box.translate(tile.topLeft());
+                    candidate.tile = single ? -1 : t;
+                    candidate.top = tile.top() > bounds.top() && local.top() <= 2;
+                    candidate.bottom = tile.bottom() < bounds.bottom()
+                        && local.bottom() >= tile.height() - 3;
+                    candidate.left = tile.left() > bounds.left() && local.left() <= 2;
+                    candidate.right = tile.right() < bounds.right()
+                        && local.right() >= tile.width() - 3;
+                    candidates.append(candidate);
+                }
             } catch (const std::exception &error) {
                 result.error = QString::fromUtf8(error.what());
                 break;
             } catch (...) {
                 result.error = QStringLiteral("OCR worker failed");
                 break;
+            }
+        }
+        if (!activeCancel->load() && result.error.isEmpty() && !candidates.isEmpty()) {
+            const QVector<Candidate> merged = mergeCandidates(candidates, tiles);
+            QVector<QPolygonF> boxes;
+            boxes.reserve(merged.size());
+            for (const Candidate &candidate : merged) boxes.append(candidate.box);
+            const OcrResult recognized = OcrEngine::instance().recognizeBoxes(image, boxes, activeCancel);
+            if (!recognized.cancelled) {
+                for (int i = 0; i < merged.size(); ++i) {
+                    const QRect box = paddedBox(merged[i].rect, bounds, textPadding(merged[i].rect));
+                    if (box.width() < 6 || box.height() < 6) continue;
+                    const QString text = i < recognized.lines.size()
+                        ? recognized.lines[i].text.trimmed() : QString();
+                    // Unreadable detections inside one tile are usually texture
+                    // false positives; keep them only when a seam clipped them.
+                    if (text.isEmpty() && !merged[i].clipped()) continue;
+                    const Kind kind = classify(text);
+                    const QString key = kind == Kind::None
+                        ? (text.isEmpty() ? QString() : QStringLiteral("text:") + text.toLower())
+                        : keyFor(kind, text);
+                    result.blocks.append({box, key, kind});
+                }
+                if (result.error.isEmpty() && !recognized.error.isEmpty())
+                    result.error = recognized.error;
             }
         }
         engine.busy.store(false);
@@ -259,8 +382,9 @@ AutoMosaic::Result AutoMosaic::detect(const QImage &image, const std::shared_ptr
     // QR / matrix / 1D symbols. These are already privacy-relevant on their own.
     const BarcodeResult codes = BarcodeEngine::recognize(image, activeCancel);
     for (const BarcodeItem &item : codes.items) {
-        const QRect box = item.box.toAlignedRect().intersected(bounds);
+        QRect box = item.box.toAlignedRect().intersected(bounds);
         if (box.width() < 6 || box.height() < 6) continue;
+        box = paddedBox(box, bounds, qMax(2, qRound(qMax(box.width(), box.height()) * 0.08)));
         const QString key = keyFor(Kind::Qr, item.text);
         bool duplicate = false;
         for (const Detected &seen : result.blocks)
@@ -283,6 +407,55 @@ AutoMosaic::Result AutoMosaic::detect(const QImage &image, const std::shared_ptr
     return result;
 }
 
+bool AutoMosaic::testMerging()
+{
+    const auto make = [](const QRect &rect, int tile, bool top = false, bool bottom = false,
+                         bool left = false, bool right = false) {
+        Candidate candidate;
+        candidate.rect = rect;
+        candidate.box = QPolygonF(QRectF(rect));
+        candidate.tile = tile;
+        candidate.top = top;
+        candidate.bottom = bottom;
+        candidate.left = left;
+        candidate.right = right;
+        return candidate;
+    };
+    const QVector<QRect> rows{QRect(0, 0, 1400, 1400), QRect(1080, 1080, 1320, 1320)};
+    const QVector<QRect> columns{QRect(0, 0, 1400, 1400), QRect(1080, 0, 1320, 1400)};
+
+    // A complete box must beat the half box clipped by the horizontal seam.
+    const QRect wholeRect(1100, 1385, 300, 30);
+    const Candidate half = make(QRect(1100, 1385, 300, 15), 0, false, true);
+    const Candidate whole = make(wholeRect, 1);
+    QVector<Candidate> merged = mergeCandidates({half, whole}, rows);
+    if (merged.size() != 1 || merged.first().rect != wholeRect) return false;
+    merged = mergeCandidates({whole, half}, rows);
+    if (merged.size() != 1 || merged.first().rect != wholeRect) return false;
+
+    // Two halves of one long line are united instead of dropping either side.
+    const Candidate left = make(QRect(200, 100, 1200, 30), 0, false, false, false, true);
+    const Candidate right = make(QRect(1080, 100, 700, 30), 1, false, false, true, false);
+    const QRect united(200, 100, 1580, 30);
+    merged = mergeCandidates({left, right}, columns);
+    if (merged.size() != 1 || merged.first().rect != united) return false;
+    merged = mergeCandidates({right, left}, columns);
+    if (merged.size() != 1 || merged.first().rect != united) return false;
+
+    // Adjacent lines never unite, even when each touches a seam.
+    merged = mergeCandidates({make(QRect(200, 100, 1200, 30), 0, false, false, false, true),
+                              make(QRect(1080, 120, 700, 30), 1, false, false, true, false)},
+                             columns);
+    if (merged.size() != 2) return false;
+
+    // Dense but separate rows stay separate candidates.
+    merged = mergeCandidates({make(QRect(100, 100, 300, 30), 0),
+                              make(QRect(100, 140, 300, 30), 0)},
+                             columns);
+    if (merged.size() != 2) return false;
+    return true;
+}
+
 void CaptureOverlay::selectAutoMosaic()
 {
     if (m_live) { m_live = false; commitAnnotation(); }
@@ -293,7 +466,20 @@ void CaptureOverlay::selectAutoMosaic()
     m_autoHoverBlock = -1;
     syncToolButtons();
     updateToolOptions();
-    startAutoMosaicDetection();
+    // Switching tools keeps this session's candidates; rescanning the same
+    // selection would only repeat the same work and the same scan pass.
+    const QRect selection = m_sel.normalized().intersected(QRect(0, 0, width(), height()));
+    if (!m_autoDetectedRect.isNull() && selection == m_autoDetectedRect) {
+        m_autoReveal = true;
+        const int epoch = m_autoEpoch;
+        QTimer::singleShot(kAutoRevealMs, this, [this, epoch] {
+            if (epoch != m_autoEpoch) return;
+            m_autoReveal = false;
+            update();
+        });
+    } else {
+        startAutoMosaicDetection();
+    }
     update();
 }
 
@@ -336,6 +522,7 @@ void CaptureOverlay::startAutoMosaicDetection()
         if (epoch != m_autoEpoch) return;
         m_autoPending = false;
         m_autoSpinTimer.stop();
+        m_autoDetectedRect = selection;
         applyAutoMosaicResult(result, selection, dpr);
         update();
     });
@@ -371,22 +558,6 @@ const CaptureOverlay::Annotation *CaptureOverlay::autoMosaicAnnotation() const
     return nullptr;
 }
 
-void CaptureOverlay::updateAutoMosaicCount()
-{
-    if (!m_autoCountLabel) return;
-    int total = 0, included = 0;
-    if (const Annotation *ann = autoMosaicAnnotation()) {
-        total = ann->autoBlocks.size();
-        for (const Annotation::AutoBlock &block : ann->autoBlocks)
-            if (block.included) ++included;
-    }
-    const QString text = tr("已遮挡 %1/%2").arg(included).arg(total);
-    m_autoCountLabel->setText(text);
-    m_autoCountLabel->setAccessibleName(text);
-    m_autoCountLabel->setToolTip(tr("悬停查看，点击遮挡"));
-    m_autoCountLabel->setVisible(total > 0);
-}
-
 void CaptureOverlay::applyAutoMosaicResult(const AutoMosaic::Result &result, const QRect &selection, qreal dpr)
 {
     if (result.blocks.isEmpty() || dpr <= 0) return;
@@ -408,14 +579,10 @@ void CaptureOverlay::applyAutoMosaicResult(const AutoMosaic::Result &result, con
             return false;
         };
         if (ann && covered(ann->autoBlocks)) continue;
-        if (covered(fresh)) continue;
         // Detection only proposes candidates; the user clicks a block to cover it.
         fresh.append({logical, detected.key, false});
     }
-    if (fresh.isEmpty()) {
-        updateAutoMosaicCount();
-        return;
-    }
+    if (fresh.isEmpty()) return;
 
     pushUndo();
     if (!ann) {
@@ -435,7 +602,6 @@ void CaptureOverlay::applyAutoMosaicResult(const AutoMosaic::Result &result, con
     for (const auto &block : ann->autoBlocks) bounds = bounds.united(block.rect);
     ann->rect = bounds;
     m_selAnn = -1;                          // Blocks are toggled, never moved by the regular handles.
-    updateAutoMosaicCount();
     placeToolBars();
     m_autoReveal = true;
     const int epoch = m_autoEpoch;
@@ -482,8 +648,19 @@ void CaptureOverlay::toggleAutoMosaicBlock(int annIndex, int blockIndex)
         ann.autoBlocks[blockIndex].included = included;
         dirty = ann.autoBlocks[blockIndex].rect;
     }
-    updateAutoMosaicCount();
     if (!dirty.isNull()) update(dirty.adjusted(-4, -4, 4, 4));
+}
+
+void CaptureOverlay::clearAutoMosaicHover()
+{
+    QRect dirty;
+    if (m_autoHoverAnn >= 0 && m_autoHoverAnn < m_anns.size()
+        && m_autoHoverBlock >= 0
+        && m_autoHoverBlock < m_anns[m_autoHoverAnn].autoBlocks.size())
+        dirty = m_anns[m_autoHoverAnn].autoBlocks[m_autoHoverBlock].rect;
+    m_autoHoverAnn = -1;
+    m_autoHoverBlock = -1;
+    if (!dirty.isNull()) update(dirty.adjusted(-6, -6, 6, 6));
 }
 
 void CaptureOverlay::addAutoMosaicBlock(const QRect &rect)
@@ -492,8 +669,29 @@ void CaptureOverlay::addAutoMosaicBlock(const QRect &rect)
     if (block.width() < 4 || block.height() < 4) return;
     Annotation *ann = autoMosaicAnnotation();
     if (ann) {
-        for (const auto &existing : ann->autoBlocks)
-            if (existing.rect.contains(block.center())) return;   // Already covered.
+        QVector<int> textHits;
+        bool covered = false;
+        for (int i = 0; i < ann->autoBlocks.size(); ++i) {
+            const auto &existing = ann->autoBlocks[i];
+            const QRect both = existing.rect.intersected(block);
+            const bool hit = existing.rect.contains(block.center()) || !both.isEmpty();
+            if (!hit) continue;
+            if (existing.included) { covered = true; continue; }
+            textHits.append(i);
+        }
+        if (!textHits.isEmpty()) {
+            // A box over detected text toggles those text blocks instead of
+            // painting one solid rectangle across the background.
+            pushUndo();
+            QRect dirty;
+            for (int i : textHits) {
+                ann->autoBlocks[i].included = true;
+                dirty |= ann->autoBlocks[i].rect;
+            }
+            if (!dirty.isNull()) update(dirty.adjusted(-4, -4, 4, 4));
+            return;
+        }
+        if (covered) return;   // The box only repeats an already covered area.
     }
     pushUndo();
     if (!ann) {
@@ -511,7 +709,6 @@ void CaptureOverlay::addAutoMosaicBlock(const QRect &rect)
     ann->autoBlocks.append({block, QString(), true});
     ann->rect = ann->rect.united(block);
     m_selAnn = -1;
-    updateAutoMosaicCount();
     placeToolBars();
     update(block.adjusted(-4, -4, 4, 4));
 }
@@ -695,95 +892,4 @@ void CaptureOverlay::paintAutoMosaicStatus(QPainter &p) const
         p.restore();
     }
 
-}
-
-void CaptureOverlay::paintAutoMosaicHud(QPainter &p) const
-{
-    if (!m_autoMosaic || m_atool != ATool::Mosaic || m_mode != Adjusting || m_sel.isNull()) return;
-    if (!m_autoPending && !m_autoReveal) return;
-    const QRect sel = m_sel.normalized();
-    const qint64 elapsed = m_autoScanElapsed.isValid() ? m_autoScanElapsed.elapsed() : 0;
-
-    int total = 0;
-    if (const Annotation *ann = autoMosaicAnnotation()) total = ann->autoBlocks.size();
-    const bool done = !m_autoPending;
-    const int width = qMin(320, qMax(180, sel.width() - 24));
-    const int hudH = 54;
-    QRect hud(sel.center().x() - width / 2, sel.top() - hudH / 2, width, hudH);
-    hud.moveLeft(qBound(4, hud.left(), qMax(4, this->width() - width - 4)));
-    hud.moveTop(qBound(4, hud.top(), qMax(4, this->height() - hudH - 4)));
-
-    p.save();
-    p.setRenderHint(QPainter::Antialiasing, true);
-    p.setPen(Qt::NoPen);
-    p.setBrush(QColor(0, 0, 0, 70));
-    p.drawRoundedRect(QRectF(hud).translated(0, 3), 12, 12);
-    p.setBrush(QColor(17, 18, 24, 242));
-    p.setPen(QPen(done ? QColor(87, 211, 140, 110) : QColor(94, 106, 210, 122), 1));
-    p.drawRoundedRect(QRectF(hud), 12, 12);
-
-    const QPointF signal(hud.left() + 26, hud.center().y() + 0.5);
-    p.setPen(Qt::NoPen);
-    p.setBrush(done ? QColor(87, 211, 140, 34) : QColor(94, 106, 210, 40));
-    p.drawEllipse(signal, 13, 13);
-    if (done) {
-        QPainterPath check;
-        check.moveTo(signal.x() - 5, signal.y());
-        check.lineTo(signal.x() - 1.5, signal.y() + 4);
-        check.lineTo(signal.x() + 6, signal.y() - 5.5);
-        p.setPen(QPen(QColor(87, 211, 140), 2, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
-        p.setBrush(Qt::NoBrush);
-        p.drawPath(check);
-    } else {
-        const qreal pulse = (elapsed % 1600) / 1600.0;
-        p.setBrush(Qt::NoBrush);
-        p.setPen(QPen(QColor(143, 155, 255, qRound(90 * (1.0 - pulse))), 1));
-        p.drawEllipse(signal, 9.5 + 4 * pulse, 9.5 + 4 * pulse);
-        p.setPen(Qt::NoPen);
-        p.setBrush(QColor(143, 155, 255));
-        p.drawEllipse(signal, 3.2, 3.2);
-    }
-
-    const QString title = done ? tr("发现 %1 处可遮挡内容").arg(total)
-                               : tr("正在扫描选区");
-    const QString subtitle = done ? tr("悬停查看，点击遮挡")
-                                  : tr("识别文字、二维码与图像元素");
-    QFont titleFont = p.font();
-    titleFont.setPixelSize(13);
-    titleFont.setWeight(QFont::DemiBold);
-    QFont subtitleFont = p.font();
-    subtitleFont.setPixelSize(11);
-    const int textX = hud.left() + 50;
-    const int textWidth = qMax(20, hud.right() - 14 - textX);
-    p.setFont(titleFont);
-    p.setPen(QColor(238, 240, 245));
-    p.drawText(QRect(textX, hud.top() + 8, textWidth, 17),
-               Qt::AlignLeft | Qt::AlignVCenter,
-               QFontMetrics(titleFont).elidedText(title, Qt::ElideRight, textWidth));
-    p.setFont(subtitleFont);
-    p.setPen(QColor(142, 147, 162));
-    p.drawText(QRect(textX, hud.top() + 27, textWidth, 14),
-               Qt::AlignLeft | Qt::AlignVCenter,
-               QFontMetrics(subtitleFont).elidedText(subtitle, Qt::ElideRight, textWidth));
-
-    p.save();
-    QPainterPath clip;
-    clip.addRoundedRect(QRectF(hud), 12, 12);
-    p.setClipPath(clip);
-    if (done) {
-        p.setPen(QPen(QColor(87, 211, 140, 90), 1));
-        p.drawLine(QPointF(hud.left() + 12, hud.bottom() - 0.5),
-                   QPointF(hud.right() - 12, hud.bottom() - 0.5));
-    } else {
-        const qreal railPhase = (elapsed % 1500) / 1500.0;
-        const qreal railWidth = hud.width() * 0.36;
-        const qreal x = hud.left() - railWidth + (hud.width() + railWidth) * railPhase;
-        QLinearGradient rail(x, 0, x + railWidth, 0);
-        rail.setColorAt(0, QColor(143, 155, 255, 0));
-        rail.setColorAt(0.5, QColor(143, 155, 255, 220));
-        rail.setColorAt(1, QColor(143, 155, 255, 0));
-        p.fillRect(QRectF(x, hud.bottom() - 1.5, railWidth, 1.2), rail);
-    }
-    p.restore();
-    p.restore();
 }

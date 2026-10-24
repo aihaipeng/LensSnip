@@ -3046,8 +3046,7 @@ void CaptureOverlay::updateToolOptions()
     m_autoMosaicButton = nullptr;
     m_autoModeCombo = nullptr;
     m_autoStrengthSlider = nullptr;
-    m_autoSyncBox = nullptr;
-    m_autoCountLabel = nullptr;
+    m_autoLinkButton = nullptr;
     m_colorBoard = nullptr;
     delete m_toolOptions->layout();              // Drops the previous row.
     const QList<QWidget *> stale = m_toolOptions->findChildren<QWidget *>(QString(), Qt::FindDirectChildrenOnly);
@@ -3161,7 +3160,7 @@ void CaptureOverlay::updateToolOptions()
     };
     if (tool == ATool::Mosaic && m_autoMosaic) {
         // Auto mosaic bar: the mode button (checked, click to leave), then effect,
-        // strength and synchronous toggling.
+        // strength and linked toggling.
         addAutoMosaicButton();
         addSeparator(lay);
         m_autoModeCombo = new FlatComboBox;
@@ -3187,27 +3186,28 @@ void CaptureOverlay::updateToolOptions()
         connect(m_autoStrengthSlider, &QSlider::sliderPressed, this, [this] { m_autoDragUndo = false; });
         connect(m_autoStrengthSlider, &QSlider::sliderReleased, this, [this] { m_autoDragUndo = false; });
         lay->addWidget(m_autoStrengthSlider);
-        m_autoSyncBox = new QCheckBox(tr("同步操作"));
-        m_autoSyncBox->setObjectName(QStringLiteral("autoMosaicSync"));
-        m_autoSyncBox->setChecked(m_autoMosaicSync);
-        m_autoSyncBox->setFocusPolicy(Qt::NoFocus);
-        connect(m_autoSyncBox, &QCheckBox::toggled, this, [this](bool on) {
+        m_autoLinkButton = new QToolButton;
+        m_autoLinkButton->setObjectName(QStringLiteral("autoMosaicLink"));
+        m_autoLinkButton->setText(tr("联动遮挡"));
+        m_autoLinkButton->setToolTip(tr("点击一处，相同邮箱、手机号、二维码或图片一起遮挡/恢复"));
+        m_autoLinkButton->setAccessibleName(tr("联动遮挡"));
+        m_autoLinkButton->setCheckable(true);
+        m_autoLinkButton->setChecked(m_autoMosaicSync);
+        m_autoLinkButton->setFocusPolicy(Qt::NoFocus);
+        m_autoLinkButton->setCursor(Qt::PointingHandCursor);
+        m_autoLinkButton->setFixedHeight(24);
+        m_autoLinkButton->setStyleSheet(QStringLiteral(
+            "QToolButton{color:#aeb2be;background:#13151b;border:1px solid #2b2d33;"
+            "border-radius:5px;padding:0px 8px;font-size:12px;}"
+            "QToolButton:hover{color:#f4f5f8;border-color:#3a3d46;}"
+            "QToolButton:checked{color:#ffffff;background:#5e6ad2;border-color:#5e6ad2;}"));
+        connect(m_autoLinkButton, &QToolButton::toggled, this, [this](bool on) {
             m_autoMosaicSync = on;
             LensSnipSettings settings;
             settings.setValue(QStringLiteral("Capture/AutoMosaicSync"), on);
         });
-        lay->addWidget(m_autoSyncBox);
-        m_autoCountLabel = new QLabel;
-        m_autoCountLabel->setObjectName(QStringLiteral("autoMosaicCount"));
-        m_autoCountLabel->setFocusPolicy(Qt::NoFocus);
-        m_autoCountLabel->setFixedWidth(92);
-        m_autoCountLabel->setAlignment(Qt::AlignCenter);
-        m_autoCountLabel->setStyleSheet(QStringLiteral(
-            "QLabel{color:#aeb2be;font-size:11px;border:1px solid #2b2d33;"
-            "border-radius:5px;padding:2px 6px;background:#13151b;}"));
-        lay->addWidget(m_autoCountLabel);
+        lay->addWidget(m_autoLinkButton);
         for (int i = 0; i < lay->count(); ++i) lay->itemAt(i)->widget()->show();
-        updateAutoMosaicCount();
         m_toolOptions->show();
         if (m_embedded) {
             m_toolOptions->adjustSize();

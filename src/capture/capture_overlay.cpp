@@ -717,7 +717,6 @@ void CaptureOverlay::paintEvent(QPaintEvent *event)
     if (m_mode == Adjusting && !m_sel.isNull() && m_hover.isNull() && !m_pinEdit)  // Eight resize handles.
         for (const QRect &h : handleRects(m_sel))
             paintHandle(p, h.center() + QPoint(1, 1));
-    paintAutoMosaicHud(p);                       // Status stays above the frame and its handles.
     if (m_pinEdit && !m_embedded && !m_sel.isNull()) {   // The pin keeps its resting hairline; overlay chrome, never baked.
         p.setPen(QPen(QColor(0, 0, 0, 90), 1));
         p.drawRect(m_sel.adjusted(0, 0, -1, -1));
@@ -798,6 +797,9 @@ void CaptureOverlay::mousePressEvent(QMouseEvent *e)
             m_autoPressBlock = block;
             m_autoPressMoved = false;
         } else {
+            // Starting a manual box retires the hover frame; otherwise it stays
+            // painted while the pointer drags somewhere else.
+            clearAutoMosaicHover();
             m_autoDragging = true;
             m_autoDragStart = e->pos();
             m_autoDragRect = QRect(e->pos(), QSize(1, 1));
@@ -997,8 +999,19 @@ void CaptureOverlay::mouseMoveEvent(QMouseEvent *e)
             return;
         }
         if (m_autoPressAnn >= 0) {
-            if ((pos - m_pressPos).manhattanLength() >= QApplication::startDragDistance())
+            if (!m_autoPressMoved
+                && (pos - m_pressPos).manhattanLength() >= QApplication::startDragDistance()) {
+                // A press on a candidate becomes a box when the pointer actually
+                // moves; otherwise a click keeps toggling that candidate.
                 m_autoPressMoved = true;
+                m_autoPressAnn = -1;
+                m_autoPressBlock = -1;
+                clearAutoMosaicHover();
+                m_autoDragging = true;
+                m_autoDragStart = m_pressPos;
+                m_autoDragRect = QRect(m_autoDragStart, pos).normalized();
+                update(m_autoDragRect.adjusted(-2, -2, 2, 2));
+            }
             return;
         }
         // hitHandle() reports H_Move for every interior point; only the resize
@@ -1022,15 +1035,7 @@ void CaptureOverlay::mouseMoveEvent(QMouseEvent *e)
         }
         // Leaving the candidate area, or moving onto the selection border,
         // retires the hover frame instead of leaving it pinned, click-style.
-        if (m_autoHoverAnn >= 0) {
-            QRect dirty;
-            if (m_autoHoverAnn < m_anns.size() && m_autoHoverBlock >= 0
-                && m_autoHoverBlock < m_anns[m_autoHoverAnn].autoBlocks.size())
-                dirty = m_anns[m_autoHoverAnn].autoBlocks[m_autoHoverBlock].rect;
-            m_autoHoverAnn = -1;
-            m_autoHoverBlock = -1;
-            if (!dirty.isNull()) update(dirty.adjusted(-6, -6, 6, 6));
-        }
+        if (m_autoHoverAnn >= 0) clearAutoMosaicHover();
     }
     if (m_live && m_ann.tool == ATool::Mosaic && m_ann.mosaicBrush) updateAnnotationCursor(pos);
     if (m_live) {                               // Live annotation follows the cursor.
@@ -1103,6 +1108,8 @@ void CaptureOverlay::mouseReleaseEvent(QMouseEvent *e)
             m_autoDragging = false;
             const QRect rect = m_autoDragRect.normalized();
             m_autoDragRect = QRect();
+            // Clear the dashed preview even when the drag is too small to add a block.
+            if (!rect.isNull()) update(rect.adjusted(-4, -4, 4, 4));
             if (rect.width() >= 4 && rect.height() >= 4) addAutoMosaicBlock(rect);
         } else if (!m_autoPressMoved) {
             toggleAutoMosaicBlock(m_autoPressAnn, m_autoPressBlock);
@@ -3699,6 +3706,7 @@ void CaptureOverlay::setImage(const QImage &image)
     if (image.isNull()) return;
     m_shot = QPixmap::fromImage(image);
     m_mosaicFrame = QImage();   // Mosaic samples the refreshed pixels.
+    m_autoDetectedRect = {};    // Refreshed pixels invalidate the cached candidates.
     if (m_embedded) m_sel = rect();   // Marks clip to the whole pin at its current size.
     update();
 }
@@ -3706,6 +3714,7 @@ void CaptureOverlay::setImage(const QImage &image)
 void CaptureOverlay::clearAll()
 {
     cancelAutoMosaicDetection();
+    m_autoDetectedRect = {};
     m_anns.clear();
     m_undoStack.clear();
     m_redoStack.clear();
@@ -3776,6 +3785,7 @@ void CaptureOverlay::undoAnnotation()
     m_redoStack.append(annotationSnapshot());
     m_anns = m_undoStack.takeLast();
     ++m_smartEpoch;                              // Restored indexes must not receive stale erases.
+    if (!autoMosaicAnnotation()) m_autoDetectedRect = {};   // Undoing the scan allows a fresh one.
     m_selAnn = -1;
     normalizeNumbers();
     syncUndoButtons();
