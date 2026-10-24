@@ -156,13 +156,27 @@ bool windowHung(HWND hwnd);
 // All COM objects and VARIANTs remain on the querying thread.
 QRect accessibleAt(HWND hwnd, const QPoint &point, const QRect &bounds, const QRect &previous = {});
 
+// Control-view rectangles recorded during a scoped UIA walk. Later hover points are
+// local hit tests, so sweeping across sibling controls does not repeat the COM walk.
+struct UiaCacheEntry {
+    QRect native;
+    int parent = -1;
+    bool expanded = false;   // Its control-view children were enumerated by a walk.
+};
+struct UiaCache {
+    HWND hwnd = nullptr;
+    QRect bounds;
+    QVector<UiaCacheEntry> entries;
+};
+
 // Scoped UIA hit test for one window. The walk starts at the target window's own element and
 // descends, so fullscreen capture overlays never hijack the result (a global ElementFromPoint
 // returns the topmost overlay instead). Chromium engines expose their element tree only after
 // an accessibility nudge, so wake them before walking; the walk is budget-capped and a slow
 // provider is retried on later queries instead of being disabled for the session.
 QRect uiaRectAt(UiaAutomation *automation, HWND hwnd, const QPoint &point, const QRect &bounds,
-                       const QRect &previous, QStringList *downgraded, const QString &program);
+                       const QRect &previous, QStringList *downgraded, const QString &program,
+                       UiaCache *cache = nullptr);
 
 class WindowDetector : public QThread
 {
@@ -189,6 +203,7 @@ private:
     DetectionOptions m_options;
     WindowTargets m_initialTargets;                  // Captured before the overlay takes focus; transient popups close after that.
     UiaAutomation *m_uia = nullptr;
+    UiaCache m_uiaCache;
     QStringList m_uiaSlow;
     QMutex m_mutex;
     QWaitCondition m_wake;

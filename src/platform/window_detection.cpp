@@ -243,6 +243,91 @@ bool windowHung(HWND hwnd)
             && GetLastError() == ERROR_TIMEOUT);
 }
 
+namespace {
+int uiaCacheAdd(UiaCache *cache, const QRect &rect, int parent)
+{
+    if (!cache || rect.isEmpty()) return -1;
+    for (int i = 0; i < cache->entries.size(); ++i)
+        if (cache->entries.at(i).native == rect && cache->entries.at(i).parent == parent)
+            return i;
+    // shortcut: cap virtualized trees; raise the cap if a deep list loses elements.
+    if (cache->entries.size() >= 1500) return -1;
+    cache->entries.append({rect, parent, false});
+    return cache->entries.size() - 1;
+}
+
+int uiaCacheHit(const UiaCache &cache, const QPoint &point)
+{
+    int best = -1;
+    qint64 bestArea = 0;
+    for (int i = 0; i < cache.entries.size(); ++i) {
+        const QRect &rect = cache.entries.at(i).native;
+        if (!rect.contains(point)) continue;
+        const qint64 area = rectArea(rect);
+        if (best < 0 || area < bestArea) { best = i; bestArea = area; }
+    }
+    return best;
+}
+
+// Semantic controls whose own rectangle is the useful capture target. Returning
+// the control instead of walking into its label keeps a sweep responsive; real
+// containers (Pane, Group, Document, List, ToolBar...) stay unexpanded so the
+// first hover inside them still refines.
+bool uiaCacheLeaf(int controlType)
+{
+    switch (controlType) {
+    case 50000:  // Button
+    case 50002:  // CheckBox
+    case 50003:  // ComboBox
+    case 50004:  // Edit
+    case 50005:  // Hyperlink
+    case 50006:  // Image
+    case 50007:  // ListItem
+    case 50011:  // MenuItem
+    case 50012:  // ProgressBar
+    case 50013:  // RadioButton
+    case 50014:  // ScrollBar
+    case 50015:  // Slider
+    case 50016:  // Spinner
+    case 50019:  // TabItem
+    case 50020:  // Text
+    case 50022:  // ToolTip
+    case 50024:  // TreeItem
+    case 50027:  // Thumb
+    case 50031:  // SplitButton
+    case 50035:  // HeaderItem
+    case 50038:  // Separator
+        return true;
+    default:
+        return false;
+    }
+}
+
+QRect uiaCacheAncestor(const UiaCache &cache, const QRect &previous)
+{
+    if (previous.isEmpty()) return {};
+    for (int i = 0; i < cache.entries.size(); ++i) {
+        if (cache.entries.at(i).native != previous) continue;
+        for (int parent = cache.entries.at(i).parent; parent >= 0;
+             parent = cache.entries.at(parent).parent) {
+            const QRect &rect = cache.entries.at(parent).native;
+            if (rect != previous && rect.contains(previous)) return rect;
+        }
+    }
+    // A native or MSAA child may be finer than the cached UIA level; the
+    // smallest cached rectangle containing it is the next expandable level.
+    int best = -1;
+    qint64 bestArea = 0;
+    for (int i = 0; i < cache.entries.size(); ++i) {
+        const QRect &rect = cache.entries.at(i).native;
+        if (!rect.contains(previous) || rect == previous) continue;
+        const qint64 area = rectArea(rect);
+        if (best < 0 || area < bestArea) { best = i; bestArea = area; }
+    }
+    return best >= 0 ? cache.entries.at(best).native : QRect();
+}
+}
+
 QRect accessibleAt(HWND hwnd, const QPoint &point, const QRect &bounds, const QRect &previous)
 {
     if (windowHung(hwnd)) return {};
@@ -311,9 +396,33 @@ QRect accessibleAt(HWND hwnd, const QPoint &point, const QRect &bounds, const QR
 }
 
 QRect uiaRectAt(UiaAutomation *automation, HWND hwnd, const QPoint &point, const QRect &bounds,
-                       const QRect &previous, QStringList *downgraded, const QString &program)
+                       const QRect &previous, QStringList *downgraded, const QString &program,
+                       UiaCache *cache)
 {
+    const bool cached = cache && cache->hwnd == hwnd && cache->bounds == bounds;
+    if (cached) {
+        // Warm path: a hover sweep over recorded siblings is a local rectangle
+        // hit test, not another COM walk.
+        if (!previous.isEmpty()) {
+            const QRect parent = uiaCacheAncestor(*cache, previous);
+            if (!parent.isEmpty()) return parent;
+        } else {
+            const int hit = uiaCacheHit(*cache, point);
+            if (hit >= 0) {
+                const UiaCacheEntry &entry = cache->entries.at(hit);
+                // A hit whose children were never enumerated must still walk:
+                // returning the container would hide every element inside it.
+                if (entry.expanded && entry.native != bounds && entry.native.contains(point))
+                    return entry.native;
+            }
+        }
+    }
     if (!automation || windowHung(hwnd)) return QRect();
+    if (cache && !cached) {
+        cache->hwnd = hwnd;
+        cache->bounds = bounds;
+        cache->entries.clear();
+    }
     const auto rectOf = [bounds](UiaElement *element) {
         RECT r{};
         if (!element || FAILED(element->CurrentBoundingRectangle(&r)) || r.right <= r.left || r.bottom <= r.top)
@@ -341,25 +450,45 @@ QRect uiaRectAt(UiaAutomation *automation, HWND hwnd, const QPoint &point, const
     // over-budget walk is normal and a permanent downgrade loses real elements.
     QElapsedTimer timer;
     timer.start();
+    const int rootIndex = uiaCacheAdd(cache, rectOf(root), -1);
     // Single-path descent with decoy skipping: some providers expose empty containers with the
-    // same rectangle as the real branch (e.g. browser frames), so keep scanning siblings only
-    // until a child actually shrinks the rectangle.
-    std::function<UiaElement *(UiaElement *, int)> search;
-    search = [&](UiaElement *element, int depth) -> UiaElement * {
+    // same rectangle as the real branch (e.g. browser frames), so recurse only into the first
+    // sibling that shrinks the rectangle. Remaining siblings are recorded for the warm cache so
+    // a sweep across a toolbar does not repeat this walk.
+    std::function<UiaElement *(UiaElement *, int, int)> search;
+    search = [&](UiaElement *element, int depth, int selfIndex) -> UiaElement * {
         element->AddRef();                               // Owned reference for the caller.
         if (depth >= 60 || timer.elapsed() >= kUiaQueryBudgetMs) return element;
-        const int selfArea = rectArea(rectOf(element));
+        const QRect selfRect = rectOf(element);
+        const int selfArea = rectArea(selfRect);
+        UiaElement *chosen = nullptr;
         UiaElement *child = nullptr;
-        if (SUCCEEDED(walker->GetFirstChildElement(element, &child)) && child) {
-            while (child && timer.elapsed() < kUiaQueryBudgetMs) {
-                if (rectOf(child).contains(point)) {
-                    UiaElement *found = search(child, depth + 1);
-                    if (rectArea(rectOf(found)) < selfArea) {
-                        child->Release();                // `found` already owns a reference.
-                        element->Release();
-                        return found;                    // Shrunk: stop scanning siblings.
-                    }
-                    found->Release();
+        bool expanded = false;
+        int afterChosen = 0;
+        int typed = 0;
+        if (SUCCEEDED(walker->GetFirstChildElement(element, &child))) {
+            expanded = true;
+            while (child) {
+                if (timer.elapsed() >= kUiaQueryBudgetMs) { expanded = false; break; }
+                const QRect childRect = rectOf(child);
+                const int childIndex = uiaCacheAdd(cache, childRect, selfIndex);
+                if (!chosen && childRect.contains(point)) {
+                    UiaElement *found = search(child, depth + 1, childIndex);
+                    if (rectArea(rectOf(found)) < selfArea) chosen = found;
+                    else found->Release();
+                } else if (cache && typed < 64 && childIndex >= 0
+                           && !cache->entries.at(childIndex).expanded) {
+                    ++typed;
+                    int type = 0;
+                    if (SUCCEEDED(child->CurrentControlType(&type)) && uiaCacheLeaf(type))
+                        cache->entries[childIndex].expanded = true;
+                }
+                // Enough siblings to cover a toolbar or list row without letting
+                // a huge virtualized list turn the first hover into a full scan.
+                // Without a cache the old stop-at-first-shrink behavior is kept.
+                if (chosen) {
+                    if (!cache) break;
+                    if (++afterChosen >= 48) { expanded = false; break; }
                 }
                 UiaElement *sibling = nullptr;
                 const HRESULT hr = walker->GetNextSiblingElement(child, &sibling);
@@ -368,9 +497,14 @@ QRect uiaRectAt(UiaAutomation *automation, HWND hwnd, const QPoint &point, const
             }
             if (child) child->Release();
         }
+        if (expanded && cache && selfIndex >= 0) cache->entries[selfIndex].expanded = true;
+        if (chosen) {
+            element->Release();
+            return chosen;                               // Shrunk: the finer element wins.
+        }
         return element;
     };
-    UiaElement *held = walking ? search(root, 0) : nullptr;
+    UiaElement *held = walking ? search(root, 0, rootIndex) : nullptr;
     QRect deepest = rectOf(held ? held : root);
     QRect result;
     if (previous.isEmpty()) {
@@ -501,7 +635,7 @@ void WindowDetector::run()  {
                 if (container) {
                     const QRect uia = m_uia && blocked
                         ? uiaRectAt(m_uia, win.hwnd, request.point, win.native, request.previous,
-                                    &m_uiaSlow, win.program) : QRect();
+                                    &m_uiaSlow, win.program, &m_uiaCache) : QRect();
                     if (!uia.isEmpty() && (best.isEmpty() || rectArea(uia) < rectArea(best)))
                         best = uia;
                 }

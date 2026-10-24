@@ -354,6 +354,39 @@ int CaptureOverlay::testWindowDetection()
           "UIA wheel expansion walks to a strictly containing ancestor");
     check(uiaMarked == buttonRect,
           "a slow-provider mark is diagnostic and cannot disable later UIA queries");
+    // A warm walk answers sibling and ancestor queries without COM, so a fast
+    // sweep does not repeat the 240 ms tree walk for every control.
+    UiaCache cache;
+    QRect cachedHit, cachedGrow;
+    QThread *cacheProbe = QThread::create([&] {
+        if (SUCCEEDED(CoInitializeEx(nullptr, COINIT_MULTITHREADED))) {
+            UiaAutomation *automation = nullptr;
+            if (SUCCEEDED(CoCreateInstance(kUiaClassId, nullptr, CLSCTX_INPROC_SERVER, kUiaIid,
+                                           reinterpret_cast<void **>(&automation))) && automation) {
+                QStringList slow;
+                const QRect window = rawRect(fixture.window);
+                uiaRectAt(automation, fixture.window, buttonRect.center(), window,
+                          QRect(), &slow, QStringLiteral("uia-cache"), &cache);
+                cachedHit = uiaRectAt(nullptr, fixture.window, editRect.center(), window,
+                                      QRect(), nullptr, QString(), &cache);
+                cachedGrow = uiaRectAt(nullptr, fixture.window, buttonRect.center(), window,
+                                       buttonRect, nullptr, QString(), &cache);
+                automation->Release();
+            }
+            CoUninitialize();
+        }
+    });
+    QEventLoop cacheLoop;
+    QObject::connect(cacheProbe, &QThread::finished, &cacheLoop, &QEventLoop::quit);
+    cacheProbe->start();
+    QTimer::singleShot(5000, &cacheLoop, &QEventLoop::quit);
+    cacheLoop.exec();
+    check(cacheProbe->isFinished(), "warm-cache probe finishes");
+    cacheProbe->wait();
+    delete cacheProbe;
+    check(cachedHit == editRect, "a warm cache resolves a sibling control without COM");
+    check(cachedGrow.contains(buttonRect) && cachedGrow != buttonRect,
+          "a warm cache walks to the parent without COM");
     overlay.m_hoverHistory.clear();
     QWheelEvent expand(expectedEdit.center(), expectedEdit.center() + overlay.geometry().topLeft(),
         QPoint(), QPoint(0, 120), Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase, false);
@@ -365,6 +398,21 @@ int CaptureOverlay::testWindowDetection()
         QPoint(), QPoint(0, -120), Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase, false);
     QApplication::sendEvent(&overlay, &shrink);
     check(overlay.m_hover == expectedEdit, "wheel contraction restores the previous finer element");
+    // The current frame is the click target. A fresh query here would undo a
+    // wheel-expanded parent and lock whatever happens to be under the cursor.
+    QMouseEvent lockPress(QEvent::MouseButtonPress, expectedEdit.center(),
+                          expectedEdit.center() + overlay.geometry().topLeft(),
+                          Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+    QApplication::sendEvent(&overlay, &lockPress);
+    QMouseEvent lockRelease(QEvent::MouseButtonRelease, expectedEdit.center(),
+                            expectedEdit.center() + overlay.geometry().topLeft(),
+                            Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+    QApplication::sendEvent(&overlay, &lockRelease);
+    check(overlay.m_sel == expectedEdit && overlay.m_mode == Adjusting,
+          "a click locks the currently shown frame without waiting for a new query");
+    overlay.resetSelection();
+    overlay.m_hover = expectedEdit;
+    overlay.m_hoverPaint = expectedEdit;
     const QPointer<WindowDetector> silent = overlay.m_detector;
     silent->blockSignals(true);                  // Simulate a provider that never supplies its result.
     overlay.cancelDetection();

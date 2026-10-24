@@ -266,19 +266,25 @@ int main(int argc, char **argv)
         for (const DetectedWindow &win : targets) {
             if (!win.native.contains(point)) continue;
             QStringList slow;
+            UiaCache uiaCache;
             QElapsedTimer total, t;
             total.start();
             t.start();
-            const QRect uia = uiaRectAt(automation, win.hwnd, point, win.native, QRect(), &slow, win.program);
+            const QRect uia = uiaRectAt(automation, win.hwnd, point, win.native, QRect(), &slow, win.program,
+                                        &uiaCache);
             const qint64 uiaMs = t.restart();
+            const QRect warm = uiaRectAt(automation, win.hwnd, point, win.native, QRect(), &slow, win.program,
+                                         &uiaCache);
+            const qint64 warmMs = t.restart();
             const QRect msaa = SUCCEEDED(com) ? accessibleAt(win.hwnd, point, win.native) : QRect();
             const qint64 msaaMs = t.restart();
             const QRect child = childAt(win, point);
             const qint64 childMs = t.elapsed();
-            std::printf("window (%d,%d %dx%d) program=%s\nuia    (%d,%d %dx%d) %lldms\nmsaa   (%d,%d %dx%d) %lldms\nchild  (%d,%d %dx%d) %lldms\ntotal query %lldms\n",
+            std::printf("window (%d,%d %dx%d) program=%s\nuia    (%d,%d %dx%d) %lldms\nwarm   (%d,%d %dx%d) %lldms\nmsaa   (%d,%d %dx%d) %lldms\nchild  (%d,%d %dx%d) %lldms\ntotal query %lldms\n",
                         win.native.x(), win.native.y(), win.native.width(), win.native.height(),
                         qPrintable(win.program),
                         uia.x(), uia.y(), uia.width(), uia.height(), uiaMs,
+                        warm.x(), warm.y(), warm.width(), warm.height(), warmMs,
                         msaa.x(), msaa.y(), msaa.width(), msaa.height(), msaaMs,
                         child.x(), child.y(), child.width(), child.height(), childMs,
                         total.elapsed());

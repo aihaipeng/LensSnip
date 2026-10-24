@@ -969,8 +969,12 @@ void CaptureOverlay::mousePressEvent(QMouseEvent *e)
         resetSelection();                       // A fresh press always starts from a clean state.
         m_drag = H_New;
     }
-    m_pressWindow = m_drag == H_New ? windowAt(e->pos()) : QRect();
-    if (m_drag == H_New) requestDetection(e->pos());
+    // A click commits the frame the user can currently see. Re-querying here
+    // would discard a wheel-expanded parent and replace it with a different
+    // element under the cursor.
+    const bool hovered = m_drag == H_New && m_hover.contains(e->pos());
+    m_pressWindow = m_drag == H_New ? (hovered ? m_hover : windowAt(e->pos())) : QRect();
+    if (m_drag == H_New && !hovered) requestDetection(e->pos());
     updateInspector();
 }
 
@@ -1183,7 +1187,7 @@ void CaptureOverlay::wheelEvent(QWheelEvent *e)
     if (m_drag != H_None || m_mode != Selecting || !m_detectionOptions.elements) return;
     const QPoint point = e->position().toPoint();
     if (e->angleDelta().y() > 0) {
-        if (m_hoverHistory.isEmpty()) m_hoverHistory.append(m_hover);
+        if (m_hoverHistory.isEmpty() && !m_hover.isNull()) m_hoverHistory.append(m_hover);
         requestDetection(point, m_hover);
     } else if (e->angleDelta().y() < 0) {
         cancelDetection();
