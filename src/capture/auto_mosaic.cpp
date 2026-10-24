@@ -69,12 +69,12 @@ qint64 boxArea(const QRect &rect)
 
 // One detection box plus the tile that produced it. Seams between overlapping
 // tiles clip a line into half boxes; the merge below keeps the complete box or
-// unites two complementary halves before recognition.
+// unites complementary halves before recognition.
 struct Candidate {
     QRect rect;
     QPolygonF box;
+    QRect span;                                  // Union of the tiles merged into this box.
     int tile = -1;
-    int pieces = 1;
     bool top = false, bottom = false, left = false, right = false;
     bool clipped() const { return top || bottom || left || right; }
 };
@@ -95,8 +95,10 @@ bool sameColumn(const QRect &a, const QRect &b)
 
 bool uniteHalves(const Candidate &a, const Candidate &b, const QVector<QRect> &tiles, QRect *united)
 {
-    if (a.tile < 0 || b.tile < 0 || a.tile == b.tile || a.pieces + b.pieces > 3) return false;
-    if (!tiles[a.tile].intersects(tiles[b.tile])) return false;
+    if (a.tile < 0 || b.tile < 0 || a.tile == b.tile) return false;
+    // A merged box may span several tiles; keep following the span so a long
+    // line can be united across every seam it crosses.
+    if (!a.span.intersects(tiles[b.tile])) return false;
     const bool horizontal = (a.left && b.right) || (b.left && a.right);
     const bool vertical = (a.top && b.bottom) || (b.top && a.bottom);
     if (!horizontal && !vertical) return false;
@@ -121,17 +123,18 @@ QVector<Candidate> mergeCandidates(QVector<Candidate> candidates, const QVector<
     });
     QVector<Candidate> merged;
     for (Candidate next : candidates) {
+        if (next.tile >= 0 && next.span.isNull()) next.span = tiles[next.tile];
         bool duplicate = false;
         for (Candidate &kept : merged) {
             QRect united;
             if (uniteHalves(kept, next, tiles, &united)) {
                 kept.rect = united;
                 kept.box = QPolygonF(QRectF(united));
+                kept.span = kept.span.united(tiles[next.tile]);
                 kept.top = kept.top || next.top;
                 kept.bottom = kept.bottom || next.bottom;
                 kept.left = kept.left || next.left;
                 kept.right = kept.right || next.right;
-                kept.pieces += next.pieces;
                 duplicate = true;
                 break;
             }
@@ -453,6 +456,17 @@ bool AutoMosaic::testMerging()
                               make(QRect(100, 140, 300, 30), 0)},
                              columns);
     if (merged.size() != 2) return false;
+
+    // A merged box keeps following its tile span: the third fragment is two
+    // tiles away from the tile the union started in, so checking only that
+    // first tile would leave it as a second block.
+    const QVector<QRect> row3{QRect(0, 0, 1400, 1400), QRect(1080, 0, 1400, 1400),
+                              QRect(2160, 0, 1400, 1400)};
+    merged = mergeCandidates({make(QRect(0, 100, 1400, 30), 0, false, false, false, true),
+                              make(QRect(1080, 100, 1400, 30), 1, false, false, true, true),
+                              make(QRect(2160, 100, 948, 30), 2, false, false, true, false)},
+                             row3);
+    if (merged.size() != 1 || merged.first().rect != QRect(0, 100, 3108, 30)) return false;
     return true;
 }
 
@@ -522,7 +536,7 @@ void CaptureOverlay::startAutoMosaicDetection()
         if (epoch != m_autoEpoch) return;
         m_autoPending = false;
         m_autoSpinTimer.stop();
-        m_autoDetectedRect = selection;
+        if (result.error.isEmpty()) m_autoDetectedRect = selection;   // A failed scan stays eligible for a retry.
         applyAutoMosaicResult(result, selection, dpr);
         update();
     });
@@ -537,6 +551,12 @@ void CaptureOverlay::cancelAutoMosaicDetection()
     m_autoPending = false;
     m_autoReveal = false;
     m_autoSpinTimer.stop();
+    // A tool switch or Esc mid-drag must not leave a dashed box or a phantom drag.
+    m_autoDragging = false;
+    m_autoDragRect = QRect();
+    m_autoPressAnn = -1;
+    m_autoPressBlock = -1;
+    m_autoPressMoved = false;
     if (m_autoWatcher) {
         m_autoWatcher->disconnect(this);
         m_autoWatcher->deleteLater();

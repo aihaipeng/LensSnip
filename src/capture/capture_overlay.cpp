@@ -677,7 +677,7 @@ void CaptureOverlay::paintEvent(QPaintEvent *event)
         paintAnnotations(p, QPointF(0, 0), 1.0, QRectF(event->rect()), false);
         paintAutoMosaicOverlay(p);
         paintAutoMosaicStatus(p);
-        if (m_autoDragging && !m_autoDragRect.isNull()) {
+        if (m_autoMosaic && m_atool == ATool::Mosaic && m_autoDragging && !m_autoDragRect.isNull()) {
             p.setPen(QPen(Bar::accent, 1, Qt::DashLine));
             p.setBrush(QColor(91, 140, 255, 30));
             p.drawRect(m_autoDragRect.normalized());

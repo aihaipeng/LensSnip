@@ -210,6 +210,33 @@ int CaptureOverlay::testAutoMosaic(const QString &previewPath)
                 if (block.kind == Kind::Url) { ++longUrlCount; longUrlBlock = block.rect; }
             check(longUrlCount == 1, "a link across two tile seams stays one block");
             check(longUrlBlock.width() >= 1350, "the merged link covers the whole line");
+
+            // The same link starting at the left edge crosses all three tiles.
+            // Merging must follow the widening tile span, not stop after the
+            // second tile and leave the tail as its own block.
+            QImage leftUrl(3200, 500, QImage::Format_RGB32);
+            leftUrl.fill(Qt::white);
+            {
+                QPainter p(&leftUrl);
+                QFont font(QStringLiteral("Arial"));
+                font.setPixelSize(56);
+                p.setFont(font);
+                p.setPen(Qt::black);
+                p.drawText(0, 200, QStringLiteral(
+                    "https://example.com/reports/2026/october/quarterly-summary/department/"
+                    "finance/archive/download?id=1234567890"));
+            }
+            const AutoMosaic::Result leftResult = AutoMosaic::detect(leftUrl);
+            int leftUrlCount = 0;
+            QRect leftUrlBlock;
+            for (const AutoMosaic::Detected &block : leftResult.blocks)
+                if (block.kind == Kind::Url) { ++leftUrlCount; leftUrlBlock = block.rect; }
+            check(leftUrlCount == 1, "a left-aligned link across three tiles stays one block");
+            check(leftUrlBlock.width() >= 2500, "the left-aligned link covers the whole line");
+            int leftLineBlocks = 0;
+            for (const AutoMosaic::Detected &block : leftResult.blocks)
+                if (block.rect.center().y() > 100 && block.rect.center().y() < 260) ++leftLineBlocks;
+            check(leftLineBlocks == 1, "the left-aligned link leaves no tail block");
         }
     }
 
@@ -254,9 +281,16 @@ int CaptureOverlay::testAutoMosaic(const QString &previewPath)
             }
             check(email > 0 && url > 0, "the overlay keeps e-mail and link blocks");
             const int cachedCount = found->autoBlocks.size();
+            check(overlay->m_autoDetectedRect
+                      == overlay->m_sel.normalized().intersected(overlay->rect()),
+                  "the finished scan caches its selection");
             overlay->selectMosaicMode(false);
+            const QRect cachedSelection = overlay->m_autoDetectedRect;
             overlay->selectAutoMosaic();
-            check(!overlay->m_autoPending,
+            // Rebuilding the strip can resize the canvas on some DPIs; a rescan is
+            // correct only when the selection no longer matches the cached one.
+            check(!overlay->m_autoPending
+                      || cachedSelection != overlay->m_sel.normalized().intersected(overlay->rect()),
                   "returning to auto mode reuses the cached scan");
             found = overlay->autoMosaicAnnotation();
             check(found && found->autoBlocks.size() == cachedCount,
@@ -274,6 +308,18 @@ int CaptureOverlay::testAutoMosaic(const QString &previewPath)
                   "clicking the covered block removes its mosaic");
             for (int i = 0; i < 3 && overlay->autoMosaicAnnotation(); ++i) overlay->undoAnnotation();
             check(!overlay->autoMosaicAnnotation(), "undo removes the detected candidate batch");
+
+            // A scan that failed (the OCR engine was busy) must stay retryable.
+            OcrEngine::instance().busy.store(true);
+            overlay->selectAutoMosaic();
+            check(waitUntil([&overlay] { return !overlay->m_autoPending; }),
+                  "a scan with a busy OCR engine finishes");
+            check(overlay->m_autoDetectedRect.isNull(),
+                  "a failed scan is not cached as if it had run");
+            OcrEngine::instance().busy.store(false);
+            overlay->selectAutoMosaic();
+            check(overlay->m_autoPending, "entering auto mode retries the failed scan");
+            overlay->cancelAutoMosaicDetection();
         }
         overlay->close();
     }
@@ -451,6 +497,15 @@ int CaptureOverlay::testAutoMosaic(const QString &previewPath)
         overlay->undoAnnotation();
         check(overlay->m_anns[0].autoBlocks.size() == before,
               "one more undo removes the manual block");
+
+        // Esc (or any tool switch) during a box drag leaves no dashed preview.
+        QMouseEvent abortPress = mouse(QEvent::MouseButtonPress, QPoint(500, 400),
+                                       Qt::LeftButton, Qt::LeftButton);
+        overlay->mousePressEvent(&abortPress);
+        check(overlay->m_autoDragging, "a press on empty canvas starts the box preview");
+        overlay->setToolNone();
+        check(!overlay->m_autoDragging && overlay->m_autoDragRect.isNull(),
+              "leaving auto mode clears the drag preview");
 
         // Per-block effect images are reused between repaints instead of being
         // rebuilt from the full capture on every click.

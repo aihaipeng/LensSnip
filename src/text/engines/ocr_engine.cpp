@@ -242,7 +242,13 @@ OcrResult OcrEngine::recognizeBoxes(QImage image, const QVector<QPolygonF> &boxe
                 result.lines.clear();
                 return result;
             }
-            OcrLine line = recognizeLine(image, box, cancel);
+            OcrLine line;
+            try {
+                line = recognizeLine(image, box, cancel);
+            } catch (const std::exception &) {
+                // One unreadable line must not erase the other lines of the page.
+                line.box = box;
+            }
             if (line.score < 0.5f) {
                 line.text.clear();
                 line.glyphs.clear();
