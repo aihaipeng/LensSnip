@@ -34,12 +34,12 @@ enum class Icon { Save, Copy, Pin, LongShot, Ocr, Cancel, Rect, Ellipse, Arrow, 
                   Watermark, More, Folder };
 
 // dark: glyphs for a dark surface (light ink) instead of the light bars.
-QIcon makeIcon(Icon icon, int size = 16, bool dark = false);
+QIcon makeIcon(Icon icon, int size = 20, bool dark = false);
 
 // Text-card glyphs: muted ink, accent when hovered (QIcon::Active) or checked, dim when disabled.
-QIcon cardIcon(Icon icon, int size = 16);
+QIcon cardIcon(Icon icon, int size = 20);
 // Muted glyphs that brighten to ink on hover; used by the save card's close/folder actions.
-QIcon subtleIcon(Icon icon, int size = 16);
+QIcon subtleIcon(Icon icon, int size = 20);
 
 QToolButton *iconButton(Icon icon, const QString &tip);
 
@@ -49,7 +49,7 @@ inline const QColor background{"#101114"}, surface{"#18191d"}, content{"#0c0d10"
     field{"#111216"}, ink{"#f4f5f8"}, muted{"#9c9da1"}, dim{"#73757f"},
     accent{"#5e6ad2"}, divider{"#2b2d33"}, hover{"#222326"}, selection{"#32345b"},
     focusRing{"#828fff"}, primaryFill{"#e5e5e6"}, primaryInk{"#09090a"};
-constexpr int button = 28, icon = 18, radius = 8, gap = 8;
+constexpr int button = 28, icon = 20, radius = 8, gap = 8;
 }
 // Neutral modal surfaces share the action and focus colors with the floating bars.
 namespace DialogTheme {

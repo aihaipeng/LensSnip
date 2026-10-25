@@ -86,7 +86,7 @@ int CaptureOverlay::testThemeUi(const QString &previewPath)
     review.check(Bar::accent == QColor("#5e6ad2") && Bar::surface == QColor("#18191d")
                      && Bar::ink == QColor("#f4f5f8") && Bar::divider == QColor("#2b2d33"),
                  "chrome colors match the approved design tokens");
-    review.check(Bar::button == 28 && Bar::icon == 18, "compact toolbar hit boxes and icon sizes match the design");
+    review.check(Bar::button == 28 && Bar::icon == 20, "compact toolbar hit boxes and icon sizes match the design");
     QImage desktop(1440, 900, QImage::Format_RGB32);
     desktop.fill(QColor("#e6e9ee"));
     { QPainter painter(&desktop); painter.drawImage(QPoint(280, 140), documentImage()); }

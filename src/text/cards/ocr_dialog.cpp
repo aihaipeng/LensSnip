@@ -494,7 +494,7 @@ void PickerCombo::paintEvent(QPaintEvent *)
     // The sheet hides the native arrow; draw the card chevron in the drop-down area instead.
     const QRect arrow = style()->subControlRect(QStyle::CC_ComboBox,&option,QStyle::SC_ComboBoxArrow,this);
     const QIcon chevron = cardIcon(Icon::CardDown);
-    chevron.paint(&painter,QRect(arrow.center()-QPoint(7,7),QSize(14,14)),Qt::AlignCenter,
+    chevron.paint(&painter,QRect(arrow.center()-QPoint(10,10),QSize(20,20)),Qt::AlignCenter,
                   underMouse() ? QIcon::Active : QIcon::Normal);
 }
 
@@ -627,9 +627,9 @@ OcrDialog::OcrDialog(const QImage &image, const QRect &captureRect, bool transla
     const auto iconButton = [this](Icon icon,const QString &name,const QString &tip) {
         auto *button = new QToolButton(this);
         button->setObjectName(name);
-        // Rasterized on its own 16px grid, never rescaled; hover tints the glyph instead of filling the button.
+        // Rasterized on its own 20px grid, never rescaled; hover tints the glyph instead of filling the button.
         button->setIcon(cardIcon(icon));
-        button->setIconSize(QSize(16,16));
+        button->setIconSize(QSize(20,20));
         button->setAutoRaise(true);              // The style only reports hover (QIcon::Active) for auto-raise buttons.
         button->setFixedSize(28,28);
         // Clicks must not take focus (no outline); Tab still reaches and outlines the button.
@@ -753,7 +753,7 @@ OcrDialog::OcrDialog(const QImage &image, const QRect &captureRect, bool transla
     zoomLevel->setAlignment(Qt::AlignCenter);
     zoomLevel->setMinimumWidth(40);
     auto *fitToggle = iconButton(Icon::CardFit,QStringLiteral("ocrFitToggle"),QString());
-    fitToggle->setFixedSize(22,24);
+    fitToggle->setFixedSize(26,24);
     connect(fitToggle,&QToolButton::clicked,imageView,[imageView] {
         if (imageView->fitted()) imageView->zoomTo(100); else imageView->fit();
     });
@@ -784,8 +784,8 @@ OcrDialog::OcrDialog(const QImage &image, const QRect &captureRect, bool transla
     imageActions->addWidget(m_imageCount);
     imageActions->setSpacing(3);
     for (auto *button : {copyImage,zoomIn,zoomOut,fitToggle}) {
-        button->setFixedSize(22,24);
-        button->setIconSize(QSize(16,16));
+        button->setFixedSize(26,24);
+        button->setIconSize(QSize(20,20));
     }
     imageBar->setFixedHeight(28);
     imageColumn->addWidget(imageBar);
@@ -847,7 +847,7 @@ OcrDialog::OcrDialog(const QImage &image, const QRect &captureRect, bool transla
                           settings.value(QStringLiteral("Translate/target"),QStringLiteral("zh")).toString());
         syncPickers();
         auto *arrow = new QLabel;
-        arrow->setPixmap(cardIcon(Icon::CardRight).pixmap(QSize(16,16),devicePixelRatioF()));
+        arrow->setPixmap(cardIcon(Icon::CardRight).pixmap(QSize(20,20),devicePixelRatioF()));
         arrow->setAccessibleName(tr("翻译为"));
         connect(m_provider,&QComboBox::currentIndexChanged,this,[this] {
             populateLanguages(m_source->currentData().toString(),m_target->currentData().toString());
@@ -1029,7 +1029,7 @@ OcrDialog::OcrDialog(const QImage &image, const QRect &captureRect, bool transla
         row->setContentsMargins(0,0,0,0);
         row->setSpacing(3);
         auto *copy = iconButton(Icon::CardCopy, prefix + QStringLiteral("Copy"), copyTip);
-        copy->setFixedSize(22,24);
+        copy->setFixedSize(26,24);
         connect(copy,&QToolButton::clicked,this,[pane] {
             copyTextToClipboard(pane->toPlainText());
         });
@@ -1038,9 +1038,9 @@ OcrDialog::OcrDialog(const QImage &image, const QRect &captureRect, bool transla
             copy->setEnabled(!pane->toPlainText().isEmpty());
         });
         auto *plus = iconButton(Icon::CardZoomIn, prefix + QStringLiteral("ZoomIn"), tr("字号 +10%"));
-        plus->setFixedSize(22,24);
+        plus->setFixedSize(26,24);
         auto *minus = iconButton(Icon::CardZoomOut, prefix + QStringLiteral("ZoomOut"), tr("字号 -10%"));
-        minus->setFixedSize(22,24);
+        minus->setFixedSize(26,24);
         auto *percent = new QLabel;
         percent->setObjectName(prefix + QStringLiteral("ZoomLevel"));
         percent->setAlignment(Qt::AlignCenter);
@@ -1114,7 +1114,7 @@ OcrDialog::OcrDialog(const QImage &image, const QRect &captureRect, bool transla
     busyLayout->setContentsMargins(18,18,18,18); busyLayout->setSpacing(14);
     busyLayout->addStretch();
     m_emptyIcon=new QLabel(m_text->viewport());m_emptyIcon->setFixedSize(48,48);
-    m_emptyIcon->setAlignment(Qt::AlignCenter);m_emptyIcon->setPixmap(cardIcon(m_barcode?Icon::Barcode:Icon::Ocr,22).pixmap(22,22));
+    m_emptyIcon->setAlignment(Qt::AlignCenter);m_emptyIcon->setPixmap(cardIcon(m_barcode?Icon::Barcode:Icon::Ocr,20).pixmap(20,20));
     m_emptyIcon->setStyleSheet(QStringLiteral("background:#18191d;border:none;border-radius:12px;"));m_emptyIcon->hide();
     busyLayout->addWidget(m_emptyIcon,0,Qt::AlignCenter);
     busyLayout->addWidget(m_busy,0,Qt::AlignCenter);
@@ -1418,13 +1418,13 @@ void OcrDialog::showEmptyState(const QString &title,const QString &detail,bool e
     QFont font=this->font();font.setPointSizeF(qMax(10.5,font.pointSizeF()));m_busy->setFont(font);
     m_busy->setWordWrap(true);m_busy->show();
     if(error) {
-        QPixmap warning=makeIcon(Icon::Warning,22,true).pixmap(22,22);
+        QPixmap warning=makeIcon(Icon::Warning,20,true).pixmap(20,20);
         QPainter p(&warning);p.setCompositionMode(QPainter::CompositionMode_SourceIn);
         p.fillRect(warning.rect(),QColor("#e9be74"));p.end();
         m_emptyIcon->setPixmap(warning);
     } else {
         const Icon icon=m_barcode?Icon::Barcode:m_translate?Icon::CardTranslate:Icon::Ocr;
-        m_emptyIcon->setPixmap(cardIcon(icon,22).pixmap(22,22));
+        m_emptyIcon->setPixmap(cardIcon(icon,20).pixmap(20,20));
     }
     m_emptyIcon->show();m_emptyRetry->show();
     m_emptyRetry->setText(m_translate?tr("重新翻译"):tr("重新识别"));

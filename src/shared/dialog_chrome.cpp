@@ -41,7 +41,7 @@ public:
         row->addWidget(label); row->addStretch();
         auto *close = new QToolButton(this);
         close->setObjectName(QStringLiteral("dialogClose"));
-        close->setIcon(cardIcon(Icon::CardClose)); close->setFixedSize(28,28);
+        close->setIcon(cardIcon(Icon::CardClose)); close->setIconSize(QSize(20,20)); close->setFixedSize(28,28);
         close->setAccessibleName(QCoreApplication::translate("OcrDialog","关闭 (Esc)"));
         close->setStyleSheet(QStringLiteral("QToolButton{background:transparent;border:none;}QToolButton:hover{background:#222326;border-radius:6px;}"));
         row->addWidget(close);
@@ -109,7 +109,7 @@ void styleMessageBox(QMessageBox *message)
     if(message->icon()==QMessageBox::Question||message->icon()==QMessageBox::Information)
         message->setIcon(QMessageBox::NoIcon);
     else if(message->icon()==QMessageBox::Warning||message->icon()==QMessageBox::Critical) {
-        QPixmap warning=makeIcon(Icon::Warning,24,true).pixmap(24,24);QPainter p(&warning);
+        QPixmap warning=makeIcon(Icon::Warning,20,true).pixmap(20,20);QPainter p(&warning);
         p.setCompositionMode(QPainter::CompositionMode_SourceIn);p.fillRect(warning.rect(),QColor("#e9be74"));
         p.end();message->setIconPixmap(warning);
     }
@@ -230,9 +230,9 @@ void showMessageCard(QWidget *parent,const QString &heading,const QString &detai
     if(alert) {
         auto *headingRow=new QHBoxLayout;headingRow->setSpacing(12);
         auto *icon=new QLabel(content);
-        QPixmap warning=makeIcon(Icon::Warning,24,true).pixmap(24,24);QPainter painter(&warning);
+        QPixmap warning=makeIcon(Icon::Warning,20,true).pixmap(20,20);QPainter painter(&warning);
         painter.setCompositionMode(QPainter::CompositionMode_SourceIn);painter.fillRect(warning.rect(),QColor("#e9be74"));
-        painter.end();icon->setPixmap(warning);icon->setFixedSize(24,24);headingRow->addWidget(icon);
+        painter.end();icon->setPixmap(warning);icon->setFixedSize(20,20);headingRow->addWidget(icon);
         auto *title=new QLabel(heading,content);
         title->setStyleSheet(QStringLiteral("color:#f4f5f8;font-size:16px;font-weight:600;background:transparent;"));
         headingRow->addWidget(title);headingRow->addStretch();body->addLayout(headingRow);
@@ -318,7 +318,7 @@ ColorDialog::ColorDialog(const QColor &initial,QWidget *parent):QColorDialog(ini
     hue->setStyleSheet(QStringLiteral("QSlider::groove:horizontal{height:12px;border-radius:6px;background:qlineargradient(x1:0,y1:0,x2:1,y2:0,stop:0 #ff0000,stop:.17 #ffff00,stop:.33 #00ff00,stop:.5 #00ffff,stop:.67 #0000ff,stop:.83 #ff00ff,stop:1 #ff0000);}QSlider::handle:horizontal{width:10px;margin:-2px 0;background:white;border:1px solid #9c9da1;border-radius:4px;}"));left->addWidget(hue);
     auto *pick=new QPushButton(text("屏幕取色"),this);
     pick->setObjectName(QStringLiteral("colorPickScreen"));
-    pick->setIcon(makeIcon(Icon::Picker,16,true));pick->setIconSize(QSize(16,16));
+    pick->setIcon(makeIcon(Icon::Picker,20,true));pick->setIconSize(QSize(20,20));
     pick->setFixedHeight(32);pick->setCursor(Qt::PointingHandCursor);
     pick->setAccessibleName(text("屏幕取色"));pick->setToolTip(text("从冻结画面取色，Esc 取消"));
     connect(pick,&QPushButton::clicked,this,&ColorDialog::screenPickRequested);

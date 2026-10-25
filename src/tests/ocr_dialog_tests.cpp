@@ -414,8 +414,8 @@ int OcrDialog::testTranslate()
     const bool sourceBack=qAbs(sourceText->font().pointSizeF()-sourceFontBefore)<0.01
         && sourceZoomLevel->text()==QStringLiteral("100%");
     const bool normalFooters=sourceFooter->height()==28 && resultFooter->height()==28
-        && sourceCopy->width()==22 && sourceCopy->height()==24
-        && resultCopy->iconSize()==QSize(16,16);
+        && sourceCopy->width()==26 && sourceCopy->height()==24
+        && resultCopy->iconSize()==QSize(20,20);
     if(!sourceZoomed || !sourceBack || !normalFooters){
         restore();
         std::fprintf(stderr,"FAIL: Ctrl+wheel or compact per-module footers are not correct\n");

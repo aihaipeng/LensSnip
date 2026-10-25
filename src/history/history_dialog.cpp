@@ -119,9 +119,10 @@ HistoryDialog::HistoryDialog(QWidget *parent)
     bottom->addWidget(m_status);
     bottom->addStretch();
 
-    m_pin = new QPushButton(makeIcon(Icon::Pin, 16, true), tr("贴图"), this);
-    m_copy = new QPushButton(makeIcon(Icon::Copy, 16, true), tr("复制"), this);
-    m_save = new QPushButton(makeIcon(Icon::Save, 16, true), tr("保存"), this);
+    m_pin = new QPushButton(makeIcon(Icon::Pin, 20, true), tr("贴图"), this);
+    m_copy = new QPushButton(makeIcon(Icon::Copy, 20, true), tr("复制"), this);
+    m_save = new QPushButton(makeIcon(Icon::Save, 20, true), tr("保存"), this);
+    for (QPushButton *button : {m_pin, m_copy, m_save}) button->setIconSize(QSize(20, 20));
     m_delete = new QPushButton(tr("删除"), this);
     m_clear = new QPushButton(tr("清空"), this);
     auto *close = new QPushButton(tr("关闭"), this);

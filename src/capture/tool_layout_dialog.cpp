@@ -101,8 +101,8 @@ public:
         row->addStretch();
         auto *close = new QToolButton(this);
         close->setObjectName(QStringLiteral("toolLayoutClose"));
-        close->setIcon(barIcon(Icon::Cancel, 14));
-        close->setIconSize(QSize(14, 14));
+        close->setIcon(barIcon(Icon::Cancel, 20));
+        close->setIconSize(QSize(20, 20));
         close->setFixedSize(32, 32);
         close->setCursor(Qt::PointingHandCursor);
         close->setFocusPolicy(Qt::StrongFocus);
@@ -400,8 +400,8 @@ void ToolLayoutDialog::rebuild()
         button->setProperty("lenssnipSide", side);
         button->setAcceptDrops(true);
         button->installEventFilter(this);
-        button->setIcon(barIcon(entry.icon, hidden ? 16 : 18));
-        button->setIconSize(QSize(hidden ? 16 : 18, hidden ? 16 : 18));
+        button->setIcon(barIcon(entry.icon, 20));
+        button->setIconSize(QSize(20, 20));
         button->setToolTip(entry.name);
         button->setAccessibleName(entry.name);
         button->setAccessibleDescription(tr("点击选择移动与排序，也可拖动。"));

@@ -47,8 +47,6 @@
 static QToolButton *pinButton(Icon icon, const QString &tip)
 {
     auto *button = barButton(icon, tip);
-    button->setIcon(barIcon(icon, 18));
-    button->setIconSize(QSize(18, 18));
     button->setFixedSize(28, 28);
     return button;
 }

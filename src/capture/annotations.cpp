@@ -1524,7 +1524,7 @@ void CaptureOverlay::syncSizeInput()
         painter.setPen(Qt::NoPen);
         painter.setBrush(Bar::field);                // One field behind both the glyph and the value.
         painter.drawRoundedRect(QRectF(0, 0, 54, 24), 6, 6);
-        painter.drawPixmap(QPoint(2, 1), barIcon(Icon::LineWidth, 22).pixmap(QSize(22, 22), dpr));
+        painter.drawPixmap(QPoint(2, 2), barIcon(Icon::LineWidth, 20).pixmap(QSize(20, 20), dpr));
         QFont valueFont = m_sizeButton->font();
         valueFont.setPixelSize(20);
         painter.setFont(valueFont);
@@ -2542,8 +2542,8 @@ void CaptureOverlay::showWatermarkInputDialog(const QRect &workArea)
     titleLine->addStretch();
     auto *close = new QToolButton(titleRow);
     close->setObjectName(QStringLiteral("watermarkDialogClose"));
-    close->setIcon(cardIcon(Icon::CardClose, 14));
-    close->setIconSize(QSize(14, 14));
+    close->setIcon(cardIcon(Icon::CardClose, 20));
+    close->setIconSize(QSize(20, 20));
     close->setFixedSize(28, 28);
     close->setAccessibleName(QCoreApplication::translate("OcrDialog", "关闭 (Esc)"));
     close->setFocusPolicy(Qt::StrongFocus);
@@ -3288,7 +3288,7 @@ void CaptureOverlay::updateToolOptions()
         edit->setClearButtonEnabled(false);
         edit->setReadOnly(true);              // Clicking the field opens the input dialog.
         edit->installEventFilter(this);
-        auto *clearWatermark = edit->addAction(barIcon(Icon::Cancel, 14), QLineEdit::TrailingPosition);
+        auto *clearWatermark = edit->addAction(barIcon(Icon::Cancel, 20), QLineEdit::TrailingPosition);
         clearWatermark->setToolTip(tr("清除水印"));
         clearWatermark->setVisible(false);
         edit->setText(item ? item->text : QString());

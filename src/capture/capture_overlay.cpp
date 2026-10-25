@@ -215,7 +215,7 @@ CaptureOverlay::CaptureOverlay(const QVector<ScreenFrame> &frames,
     const bool rounded = m_roundEnabled;
     m_sizeCornerButton->setChecked(rounded);
     m_sizeCornerButton->setIcon(barIcon(rounded ? Icon::CornerRounded : Icon::CornerSquare));
-    m_sizeCornerButton->setIconSize(QSize(16, 16));
+    m_sizeCornerButton->setIconSize(QSize(20, 20));
     m_sizeCornerButton->setCursor(Qt::PointingHandCursor);
     m_sizeCornerButton->setToolTip(tr("切换直角/圆角"));
     m_sizeCornerButton->setAccessibleName(tr("圆角截图"));
@@ -290,7 +290,7 @@ CaptureOverlay::CaptureOverlay(const QVector<ScreenFrame> &frames,
     m_sizeLockButton->setObjectName(QStringLiteral("sizeLockAspect"));
     m_sizeLockButton->setCheckable(true);
     m_sizeLockButton->setIcon(barIcon(Icon::AspectLock));
-    m_sizeLockButton->setIconSize(QSize(16, 16));
+    m_sizeLockButton->setIconSize(QSize(20, 20));
     m_sizeLockButton->setCursor(Qt::PointingHandCursor);
     m_sizeLockButton->setToolTip(tr("锁定长宽比"));
     m_sizeLockButton->setAccessibleName(tr("锁定长宽比"));
@@ -483,9 +483,9 @@ CaptureOverlay::CaptureOverlay(const QVector<ScreenFrame> &frames,
     if (canEditLayout) {
         m_moreButton = new QToolButton(m_tools);
         m_moreButton->setObjectName(QStringLiteral("toolMoreButton"));
-        m_moreButton->setIcon(barIcon(Icon::More, 16));
-        m_moreButton->setIconSize(QSize(16, 16));
-        m_moreButton->setFixedSize(16, Bar::button);
+        m_moreButton->setIcon(barIcon(Icon::More, 20));
+        m_moreButton->setIconSize(QSize(20, 20));
+        m_moreButton->setFixedSize(20, Bar::button);
         m_moreButton->setCheckable(true);
         m_moreButton->setCursor(Qt::PointingHandCursor);
         m_moreButton->setFocusPolicy(Qt::NoFocus);
@@ -2103,15 +2103,16 @@ void CaptureOverlay::updateTip()
     const QRect bounds = fullScreen ? rect()
         : localScreenRect((screen ? screen : QGuiApplication::primaryScreen())
             ->availableGeometry()).intersected(rect());
-    const auto clear = [this, &bounds](const QRect &candidate) {
+    const auto clear = [this, &bounds, gap](const QRect &candidate) {
         if (!bounds.contains(candidate)) return false;
         if (!m_layoutCardRect.isNull() && candidate.intersects(m_layoutCardRect)) return false;
         for (QWidget *bar : {m_tools, m_toolsTop, m_toolsLeft, m_toolsRight})
-            if (bar && bar->isVisible() && candidate.intersects(bar->geometry())) return false;
+            if (bar && bar->isVisible()
+                && candidate.intersects(bar->geometry().adjusted(-gap, -gap, gap, gap))) return false;
         if (m_toolOptions && m_toolOptions->isVisible()
-            && candidate.intersects(m_toolOptions->geometry())) return false;
+            && candidate.intersects(m_toolOptions->geometry().adjusted(-gap, -gap, gap, gap))) return false;
         if (m_morePanel && m_morePanel->isVisible()
-            && candidate.intersects(m_morePanel->geometry())) return false;
+            && candidate.intersects(m_morePanel->geometry().adjusted(-gap, -gap, gap, gap))) return false;
         return true;
     };
     // The size strip belongs to the region's top-left corner: above the region
@@ -2294,8 +2295,8 @@ void CaptureOverlay::relayoutToolButtons()
         button->setParent(bar);
         if (id == QStringLiteral("more")) {
             const bool vertical = side == QStringLiteral("left") || side == QStringLiteral("right");
-            button->setFixedSize(vertical ? QSize(Bar::button, 16) : QSize(16, Bar::button));
-            static_cast<QToolButton *>(button)->setIcon(barIcon(Icon::More, 16));
+            button->setFixedSize(vertical ? QSize(Bar::button, 20) : QSize(20, Bar::button));
+            static_cast<QToolButton *>(button)->setIcon(barIcon(Icon::More, 20));
         } else {
             button->setFixedSize(Bar::button, Bar::button);
         }
@@ -2453,8 +2454,8 @@ void CaptureOverlay::rebuildMorePanel()
     }
     auto *adjust = new QToolButton(m_morePanel);
     adjust->setObjectName(QStringLiteral("toolMoreAdjust"));
-    adjust->setIcon(barIcon(Icon::Sliders, 18));
-    adjust->setIconSize(QSize(18, 18));
+    adjust->setIcon(barIcon(Icon::Sliders, 20));
+    adjust->setIconSize(QSize(20, 20));
     adjust->setFixedSize(Bar::button, Bar::button);
     adjust->setCursor(Qt::PointingHandCursor);
     adjust->setFocusPolicy(Qt::NoFocus);

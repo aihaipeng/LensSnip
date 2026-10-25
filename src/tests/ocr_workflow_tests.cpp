@@ -274,7 +274,7 @@ int CaptureOverlay::testOcr(const QString &previewPath)
     const bool fitInFooter=fitToggle && fitToggle->parentWidget()==imageBar
         && fitToggle->mapTo(imageBar,QPoint()).x()>zoomLevel->mapTo(imageBar,QPoint()).x()+zoomLevel->width()
         && imageCount->mapTo(imageBar,QPoint()).x()>fitToggle->mapTo(imageBar,QPoint()).x()+fitToggle->width()
-        && fitToggle->size()==QSize(22,24);
+        && fitToggle->size()==QSize(26,24);
     fitToggle->click();
     const bool fittedNow=zoomView->fitted()
         && fitToggle->toolTip()==OcrDialog::tr("原始大小 (1:1)");
@@ -334,9 +334,9 @@ int CaptureOverlay::testOcr(const QString &previewPath)
     if (!previewPath.isEmpty()) check(dialog->grab().save(previewPath+QStringLiteral("-comparison.png")),"save comparison window preview");
     check(qAbs(text->font().pointSizeF()-qMax(11.25,QApplication::font().pointSizeF()))<0.01
               && qAbs(dialog->font().pointSizeF()-QApplication::font().pointSizeF())<0.01
-              && copy->width()==22 && copy->height()==24 && retry->height()==32
-              && copy->iconSize()==QSize(16,16) && textBar->height()==28
-              && fitToggle->size()==QSize(22,24),
+              && copy->width()==26 && copy->height()==24 && retry->height()==32
+              && copy->iconSize()==QSize(20,20) && textBar->height()==28
+              && fitToggle->size()==QSize(26,24),
           "OCR keeps the approved type scale and compact footer targets");
     // Recognized characters are selectable on the capture, and text-pane selections light them up.
     const QString wantedLine=QStringLiteral("HelloWorld123");

@@ -313,8 +313,8 @@ void ExportDialog::buildUi()
     titleLine->addStretch();
     auto *close = new QToolButton(titleRow);
     close->setObjectName(QStringLiteral("exportClose"));
-    close->setIcon(subtleIcon(Icon::CardClose, 16));
-    close->setIconSize(QSize(16, 16));
+    close->setIcon(subtleIcon(Icon::CardClose, 20));
+    close->setIconSize(QSize(20, 20));
     close->setFixedSize(28, 28);
     close->setCursor(Qt::PointingHandCursor);
     close->setAccessibleName(tr("关闭 (Esc)"));
@@ -449,8 +449,8 @@ void ExportDialog::buildUi()
     pathLine->addWidget(m_path, 1);
     auto *browse = new QToolButton(pathField);
     browse->setObjectName(QStringLiteral("exportBrowse"));
-    browse->setIcon(subtleIcon(Icon::Folder, 16));
-    browse->setIconSize(QSize(16, 16));
+    browse->setIcon(subtleIcon(Icon::Folder, 20));
+    browse->setIconSize(QSize(20, 20));
     browse->setFixedSize(28, 28);
     browse->setCursor(Qt::PointingHandCursor);
     browse->setToolTip(tr("选择文件夹"));

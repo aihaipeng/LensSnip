@@ -176,7 +176,7 @@ QToolButton *iconButton(Icon icon, const QString &tip)
 {
     auto *button = new QToolButton;
     button->setIcon(makeIcon(icon));
-    button->setIconSize(QSize(16, 16));
+    button->setIconSize(QSize(20, 20));
     button->setToolTip(tip);
     button->setAccessibleName(tip);
     button->setToolButtonStyle(Qt::ToolButtonIconOnly);
