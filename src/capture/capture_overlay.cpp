@@ -7,6 +7,7 @@
 #include "shared/settings.h"
 #include "shared/widgets.h"
 #include "text/cards/ocr_dialog.h"
+#include "text/engines/ocr_engine.h"
 #include <QGuiApplication>
 #include <QObject>
 #include <QImage>
