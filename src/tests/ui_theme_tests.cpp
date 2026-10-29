@@ -234,12 +234,22 @@ int CaptureOverlay::testThemeUi(const QString &previewPath)
                  "the color surface exposes hex, opacity, HSV, screen picking and custom colors");
     review.check(colorScroll&&colorScroll->viewport()->rect().contains(alphaVisible),
                  "color fields fit without scrolling at this DPI");
+    auto *hueSlider=overlay.m_colorDialog->findChild<QSlider *>(QStringLiteral("colorHue"));
+    const auto centerY=[&](QWidget *control){return control->mapTo(overlay.m_colorDialog,QPoint(0,control->height()/2)).y();};
+    review.check(hueSlider&&qAbs(centerY(opacity)-centerY(hueSlider))<=1,
+                 "the opacity slider stays level with the hue slider at this DPI");
+    auto *customLast=overlay.m_colorDialog->findChild<QToolButton *>(QStringLiteral("colorCustom5"));
+    auto *resetColors=overlay.m_colorDialog->findChild<QPushButton *>(QStringLiteral("colorResetCustom"));
+    review.check(customLast&&resetColors
+                     &&colorScroll->viewport()->rect().contains(QRect(customLast->mapTo(colorScroll->viewport(),QPoint()),customLast->size()))
+                     &&colorScroll->viewport()->rect().contains(QRect(resetColors->mapTo(colorScroll->viewport(),QPoint()),resetColors->size())),
+                 "all six custom colors and their actions fit without scrolling at this DPI");
     hex->setText(QStringLiteral("#123ABC"));QMetaObject::invokeMethod(hex,"editingFinished");
     review.check(overlay.m_colorDialog->currentColor().name()==QStringLiteral("#123abc"),"hex input updates the real current color");
     const QColor beforeInvalid=overlay.m_colorDialog->currentColor();hex->setText(QStringLiteral("invalid"));QMetaObject::invokeMethod(hex,"editingFinished");
     review.check(overlay.m_colorDialog->currentColor()==beforeInvalid,"invalid hex cannot overwrite the selected color");
     alpha->setValue(80);review.check(overlay.m_colorDialog->currentColor().alpha()==80&&opacity->value()==80,"alpha input is retained in the QColorDialog contract and moves the slider");
-    bool pickerOpened=false,pickerEscaped=false;
+    bool pickerOpened=false,pickerEscaped=false,paletteStayed=false;
     QTimer fallback;fallback.setSingleShot(true);fallback.setInterval(3000);
     QObject::connect(&fallback,&QTimer::timeout,[]{if(QWidget *modal=QApplication::activeModalWidget())modal->close();});
     fallback.start();
@@ -247,14 +257,15 @@ int CaptureOverlay::testThemeUi(const QString &previewPath)
         QWidget *modal=QApplication::activeModalWidget();
         if(!modal||modal==overlay.m_colorDialog)return;
         pickerOpened=true;
+        paletteStayed=overlay.m_colorDialog&&overlay.m_colorDialog->isVisible();
         QKeyEvent esc(QEvent::KeyPress,Qt::Key_Escape,Qt::NoModifier);
         QApplication::sendEvent(modal,&esc);
         pickerEscaped=true;
     });
     pick->click();
     fallback.stop();
-    review.check(pickerOpened&&pickerEscaped&&overlay.m_colorDialog&&overlay.m_colorDialog->isVisible(),
-                 "the screen sampler opens over the frozen capture and Esc returns to the palette");
+    review.check(pickerOpened&&pickerEscaped&&paletteStayed&&overlay.m_colorDialog&&overlay.m_colorDialog->isVisible(),
+                 "the screen sampler opens over the frozen capture while the palette stays visible");
     overlay.m_colorDialog->reject();
 
     review.check(overlay.m_tools && overlay.m_tools->isVisible()

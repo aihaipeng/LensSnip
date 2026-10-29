@@ -1911,7 +1911,6 @@ void CaptureOverlay::showColorPalette()
     connect(dialog, &QColorDialog::currentColorChanged, this, [this](const QColor &c) { pickToolColor(c, false); });
     connect(dialog, &ColorDialog::screenPickRequested, this, [this, dialog] {
         QPointer<ColorDialog> guard(dialog);
-        dialog->hide();
         m_inspector->hide();
         ScreenColorPicker picker(m_frames, this);
         const bool accepted = picker.exec() == QDialog::Accepted && picker.pickedColor().isValid();
@@ -1939,15 +1938,7 @@ void CaptureOverlay::showColorPalette()
         else setFocus();
     });
     dialog->adjustSize();
-    // Fixed offset from the current-color square: right of the strip, raised so the canvas stays visible.
-    const QPoint anchor = m_colorBoard ? m_colorBoard->mapToGlobal(m_colorBoard->currentRect().topLeft())
-                                       : m_toolOptions->mapToGlobal(QPoint());
-    const QPoint target = anchor + QPoint(191, -224);
-    const QScreen *screen = QGuiApplication::screenAt(anchor);
-    const QRect available = (screen ? screen : QGuiApplication::primaryScreen())->availableGeometry();
-    dialog->move(qBound(available.left(), target.x(), available.right() + 1 - dialog->width()),
-                 qBound(available.top(), target.y(), available.bottom() + 1 - dialog->height()));
-    dialog->open();                              // Window-modal over the overlay, without a nested event loop.
+    dialog->open();                              // Window-modal over the overlay, without a nested event loop; showEvent centers it.
 }
 
 namespace {

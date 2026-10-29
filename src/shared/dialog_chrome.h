@@ -4,6 +4,7 @@
 
 class QApplication;
 class QDialog;
+class QShowEvent;
 class QWidget;
 
 // Apply one rounded frame to existing dialogs without replacing their result contracts.
@@ -19,4 +20,8 @@ public:
     explicit ColorDialog(const QColor &initial, QWidget *parent = nullptr);
 signals:
     void screenPickRequested();
+protected:
+    void showEvent(QShowEvent *event) override;
+private:
+    bool m_centered = false;
 };

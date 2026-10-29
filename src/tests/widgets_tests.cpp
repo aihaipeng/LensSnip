@@ -18,6 +18,12 @@
 #include <QSlider>
 #include <QSpinBox>
 #include <QToolButton>
+#include <QLabel>
+#include <QStyleOptionSpinBox>
+#include <QRegularExpression>
+#include <QCursor>
+#include <QScreen>
+#include <QTranslator>
 #include <QtMath>
 #include <qt_windows.h>
 #include <cstdio>
@@ -123,9 +129,67 @@ int ColorBoard::testRendering()
         auto *value = dialog.findChild<QSpinBox *>(QStringLiteral("colorV"));
         auto *pick = dialog.findChild<QPushButton *>(QStringLiteral("colorPickScreen"));
         auto *add = dialog.findChild<QPushButton *>(QStringLiteral("colorAddCustom"));
+        auto *reset = dialog.findChild<QPushButton *>(QStringLiteral("colorResetCustom"));
         auto *custom0 = dialog.findChild<QToolButton *>(QStringLiteral("colorCustom0"));
-        check(hex && alpha && opacity && hue && saturation && value && pick && add && custom0,
+        check(hex && alpha && opacity && hue && saturation && value && pick && add && reset && custom0,
               "the palette exposes hex, opacity, HSV, screen picking and custom colors");
+        dialog.show();QApplication::processEvents();
+        const QScreen *current=QGuiApplication::screenAt(QCursor::pos());
+        if(!current)current=QGuiApplication::primaryScreen();
+        check(dialog.pos()==current->availableGeometry().center()-QRect(QPoint(),dialog.size()).center(),
+              "the palette opens centered on the current screen");
+        for(auto *spin:dialog.findChildren<QSpinBox *>())if(spin->objectName().startsWith(QStringLiteral("color"))){
+            check(spin->parentWidget()->rect().contains(spin->geometry()),"numeric fields stay within their form");
+            check(spin->findChild<QLineEdit *>()->width()>=spin->fontMetrics().horizontalAdvance(QStringLiteral("359"))+4,
+                  "numeric fields display three digits without clipping");
+        }
+        auto *plane=dialog.findChild<QWidget *>(QStringLiteral("colorPlane"));
+        check(dialog.width()==560&&plane&&plane->size()==QSize(256,256)
+                  &&hex->alignment().testFlag(Qt::AlignHCenter)&&pick->text().isEmpty(),
+              "the compact palette has a square plane, centered HEX and icon-only screen picker");
+        check(dialog.findChildren<QToolButton *>(QRegularExpression(QStringLiteral("^colorCustom[0-9]+$"))).size()==6,
+              "the custom palette exposes six slots");
+        auto *custom1=dialog.findChild<QToolButton *>(QStringLiteral("colorCustom1"));
+        check(custom0->size()==QSize(32,32)&&custom1->x()-custom0->x()==52,
+              "custom colors are 32px squares with 20px gaps");
+        auto *hueSlider=dialog.findChild<QSlider *>(QStringLiteral("colorHue"));
+        const auto centerY=[&dialog](QWidget *control){return control->mapTo(&dialog,QPoint(0,control->height()/2)).y();};
+        check(hueSlider&&qAbs(centerY(opacity)-centerY(hueSlider))<=1,
+              "the opacity slider is level with the hue slider");
+        bool customHeading=false;
+        for(auto *label:dialog.findChildren<QLabel *>())
+            customHeading=customHeading||label->text()==QStringLiteral("自定义颜色");
+        check(!customHeading,"the custom color swatches have no heading text");
+        hex->setFocus(Qt::MouseFocusReason);QApplication::processEvents();
+        check(!hex->property("kbdFocus").toBool(),"mouse focus does not add a colored field outline");
+        const QImage fieldImage=hex->grab().toImage();
+        check(fieldImage.pixelColor(fieldImage.width()/2,0).saturation()<20,
+              "the clicked HEX border stays neutral instead of accent-colored");
+        hex->clearFocus();hex->setFocus(Qt::TabFocusReason);QApplication::processEvents();
+        check(hex->property("kbdFocus").toBool(),"keyboard focus retains a visible neutral indicator");
+        auto *red=dialog.findChild<QSpinBox *>(QStringLiteral("colorR"));
+        QStyleOptionSpinBox option;option.initFrom(red);option.rect=red->rect();
+        option.buttonSymbols=QAbstractSpinBox::UpDownArrows;
+        const QRect up=red->style()->subControlRect(QStyle::CC_SpinBox,&option,QStyle::SC_SpinBoxUp,red);
+        const QRect down=red->style()->subControlRect(QStyle::CC_SpinBox,&option,QStyle::SC_SpinBoxDown,red);
+        auto clickStep=[red](QPoint at){
+            for(auto type:{QEvent::MouseButtonPress,QEvent::MouseButtonRelease}){
+                QMouseEvent e(type,at,red->mapToGlobal(at),Qt::LeftButton,
+                              type==QEvent::MouseButtonPress?Qt::LeftButton:Qt::NoButton,Qt::NoModifier);
+                QApplication::sendEvent(red,&e);
+            }
+        };
+        const int beforeStep=red->value();clickStep(up.center());
+        check(red->value()==beforeStep+1,"the actual up subcontrol increments the real color channel");
+        clickStep(down.center());check(red->value()==beforeStep,"the actual down subcontrol decrements the channel");
+        red->setValue(255);clickStep(up.center());check(red->value()==255,"the up button clamps at the channel maximum");
+        red->setValue(0);clickStep(down.center());check(red->value()==0,"the down button clamps at the channel minimum");
+        red->setValue(beforeStep);
+        const QImage planeImage=plane->grab().toImage();
+        const int corner=qCeil(8*plane->devicePixelRatioF());
+        for(int x=corner;x<planeImage.width()-corner;++x)
+            check(planeImage.pixelColor(x,planeImage.height()-1).value()<=2,
+                  "the color plane bottom edge is black without a bright seam");
         bool requested = false;
         QObject::connect(&dialog, &ColorDialog::screenPickRequested, [&requested] { requested = true; });
         pick->click();
@@ -146,14 +210,60 @@ int ColorBoard::testRendering()
         const QColor savedColor = dialog.currentColor();
         add->click();
         const QStringList stored = settings.value(QStringLiteral("Capture/customColors")).toStringList();
-        check(stored.size() == 1 && custom0->isEnabled(), "saving the current color fills the first custom slot");
+        check(stored.size() == 6 && custom0->isEnabled()&&QColor(stored[0])==savedColor,
+              "saving the current color prepends it and keeps six custom slots");
         hue->setValue(0);
         custom0->click();
         check(dialog.currentColor() == savedColor, "a custom swatch restores its saved color");
+        {
+            ColorDialog reopened(Qt::red);
+            reopened.findChild<QToolButton *>(QStringLiteral("colorCustom0"))->click();
+            check(reopened.currentColor()==savedColor,"saved alpha and color survive reopening the dialog");
+        }
+        reset->click();
+        check(settings.value(QStringLiteral("Capture/customColors")).toStringList().size()==6
+                  &&QColor(settings.value(QStringLiteral("Capture/customColors")).toStringList()[0])==QColor("#d3cec7")
+                  &&dialog.currentColor()==savedColor,
+                  "reset restores the opening palette without changing the selected color");
+        {
+            ColorDialog reopened(Qt::red);
+            reopened.findChild<QToolButton *>(QStringLiteral("colorCustom0"))->click();
+            check(reopened.currentColor()==QColor("#d3cec7"),"reset colors survive reopening the dialog");
+        }
+        for(auto *label:dialog.findChildren<QLabel *>())
+            check(!label->text().contains(QStringLiteral("已保存"))&&!label->text().contains(QStringLiteral("已恢复")),
+                  "save and reset have no success text");
+        if(!qgetenv("COLOR_DIALOG_SHOT").isEmpty())
+            check(dialog.grab().save(QString::fromLocal8Bit(qgetenv("COLOR_DIALOG_SHOT"))),"save the color dialog preview");
         settings.remove(QStringLiteral("Capture/customColors"));   // Do not leak test state if the checks pass.
+    }
+    {
+        const QStringList legacy{QStringLiteral("#ff112233"),QStringLiteral("#ff223344"),QStringLiteral("#ff334455"),
+            QStringLiteral("#ff445566"),QStringLiteral("#ff556677"),QStringLiteral("#ff667788"),
+            QStringLiteral("#ff778899"),QStringLiteral("#ff8899aa")};
+        settings.setValue(QStringLiteral("Capture/customColors"),legacy);
+        ColorDialog dialog(Qt::red);
+        check(settings.value(QStringLiteral("Capture/customColors")).toStringList()==legacy,
+              "opening the six-slot palette does not truncate legacy saved colors");
+        dialog.findChild<QPushButton *>(QStringLiteral("colorResetCustom"))->click();
+        check(settings.value(QStringLiteral("Capture/customColors")).toStringList()==legacy.mid(0,6),
+              "explicit reset restores the opening six colors");
     }
     if (hadCustom) settings.setValue(QStringLiteral("Capture/customColors"), customBefore);
     else settings.remove(QStringLiteral("Capture/customColors"));
+
+    {
+        QTranslator english;
+        check(english.load(QCoreApplication::applicationDirPath()+QStringLiteral("/language/lenssnip_en_US.qm")),
+              "the English language pack loads for the palette");
+        qApp->installTranslator(&english);
+        ColorDialog dialog(Qt::red);
+        check(dialog.findChild<QPushButton *>(QStringLiteral("colorAddCustom"))->text()==QStringLiteral("Save")
+                  &&dialog.findChild<QPushButton *>(QStringLiteral("colorResetCustom"))->text()==QStringLiteral("Reset")
+                  &&dialog.findChild<QPushButton *>(QStringLiteral("colorResetCustom"))->accessibleName()==QStringLiteral("Reset custom colors"),
+              "the palette actions and accessible names are translated");
+        qApp->removeTranslator(&english);
+    }
 
     QImage pickImage(120, 90, QImage::Format_RGB32);
     pickImage.fill(QColor("#123456"));

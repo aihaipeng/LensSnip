@@ -628,6 +628,22 @@
         <translation>Save</translation>
     </message>
     <message>
+        <source>重置</source>
+        <translation>Reset</translation>
+    </message>
+    <message>
+        <source>重置自定义颜色</source>
+        <translation>Reset custom colors</translation>
+    </message>
+    <message>
+        <source>恢复打开时的自定义颜色</source>
+        <translation>Restore the custom colors from when this dialog opened</translation>
+    </message>
+    <message>
+        <source>饱和度与明度</source>
+        <translation>Saturation and value</translation>
+    </message>
+    <message>
         <location line="+1"/>
         <source>取消</source>
         <translation>Cancel</translation>

@@ -434,14 +434,13 @@ int CaptureOverlay::testColorPicker(const QString &previewPath)
               && colorDialog->testOption(QColorDialog::DontUseNativeDialog)
               && colorDialog->currentColor() == QColor("#00a2e8"),
           "the current color square opens the standard color dialog with the current color");
-    const QRect available = colorDialog->screen()->availableGeometry();
     {
-        const QPoint anchor = overlay.m_colorBoard->mapToGlobal(overlay.m_colorBoard->currentRect().topLeft());
-        const QPoint target = anchor + QPoint(191, -224);
-        const QPoint expected(qBound(available.left(), target.x(), available.right() + 1 - colorDialog->width()),
-                              qBound(available.top(), target.y(), available.bottom() + 1 - colorDialog->height()));
-        check(colorDialog->pos() == expected && available.contains(colorDialog->frameGeometry().topLeft()),
-              "the color dialog opens at a fixed offset from the current-color square, clamped to the screen");
+        QScreen *current = QGuiApplication::screenAt(QCursor::pos());
+        if (!current) current = QGuiApplication::primaryScreen();
+        const QRect available = current->availableGeometry();
+        const QPoint expected = available.center() - QRect(QPoint(), colorDialog->size()).center();
+        check(colorDialog->pos() == expected && available.contains(colorDialog->frameGeometry()),
+              "the color dialog opens centered on the current screen");
     }
     colorDialog->setCurrentColor(QColor("#123abc"));
     check(overlay.m_anns[0].color == QColor("#123abc") && overlay.m_colorBoard->currentColor() == QColor("#123abc")

@@ -584,6 +584,22 @@
         <translation>保存</translation>
     </message>
     <message>
+        <source>重置</source>
+        <translation>重置</translation>
+    </message>
+    <message>
+        <source>重置自定义颜色</source>
+        <translation>重置自定义颜色</translation>
+    </message>
+    <message>
+        <source>恢复打开时的自定义颜色</source>
+        <translation>恢复打开时的自定义颜色</translation>
+    </message>
+    <message>
+        <source>饱和度与明度</source>
+        <translation>饱和度与明度</translation>
+    </message>
+    <message>
         <location line="+1"/>
         <source>取消</source>
         <translation>取消</translation>
