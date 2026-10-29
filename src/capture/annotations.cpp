@@ -871,6 +871,7 @@ CaptureOverlay::CommentStyle CaptureOverlay::defaultCommentStyle()
         settings.value(QStringLiteral("Capture/EmbedTextFollowArrow"), true).toBool() ? 0 : 1).toInt(), 3);
     style.bold = settings.value(QStringLiteral("Capture/EmbedTextFontBold"), false).toBool();
     style.italic = settings.value(QStringLiteral("Capture/EmbedTextFontItalic"), false).toBool();
+    style.color = QColor(settings.value(QStringLiteral("Capture/EmbedTextColor")).toString());
     return style;
 }
 
@@ -883,6 +884,8 @@ void CaptureOverlay::saveCommentStyle(const CommentStyle &style)
     settings.setValue(QStringLiteral("Capture/EmbedTextFollowArrow"), style.direction != 1);
     settings.setValue(QStringLiteral("Capture/EmbedTextFontBold"), style.bold);
     settings.setValue(QStringLiteral("Capture/EmbedTextFontItalic"), style.italic);
+    settings.setValue(QStringLiteral("Capture/EmbedTextColor"),
+                      style.color.isValid() ? style.color.name(QColor::HexArgb) : QString());
 }
 
 qreal CaptureOverlay::commentAngle(const Annotation &ann)
@@ -3994,7 +3997,7 @@ void CaptureOverlay::drawAnnotation(QPainter &p, const Annotation &ann, const QI
             commentHole = turn.map(commentHole);
             const CommentStyle &cs = ann.commentStyle;
             p.setPen(Qt::NoPen);
-            p.setBrush(ann.color);
+            p.setBrush(cs.color.isValid() ? cs.color : ann.color);
             p.drawPath(commentText);
             if (cs.direction < 2) {
                 // Only inline labels cut a gap in the shaft.

@@ -127,6 +127,7 @@ int main(int argc, char **argv)
         const QString insertText = QCoreApplication::translate("CaptureOverlay", "插入文本");
         const QString textAbove = QCoreApplication::translate("CaptureOverlay", "上方");
         const QString textBelow = QCoreApplication::translate("CaptureOverlay", "下方");
+        const QString textColor = QCoreApplication::translate("CaptureOverlay", "文字颜色");
         const bool hasEnglish = I18n::availableLocales().contains(QStringLiteral("en_US"));
         const bool ok = hasEnglish
                 && (english ? capture == QStringLiteral("Screenshot (F1)")
@@ -143,7 +144,8 @@ int main(int argc, char **argv)
                                   && exportTitle == QStringLiteral("Save")
                                    && exportFolder == QStringLiteral("Choose folder")
                                    && insertText == QStringLiteral("Insert text")
-                                   && textAbove == QStringLiteral("Above") && textBelow == QStringLiteral("Below")
+                                    && textAbove == QStringLiteral("Above") && textBelow == QStringLiteral("Below")
+                                    && textColor == QStringLiteral("Text color")
                             : capture == QStringLiteral("截图 (F1)")
                                   && loading == QStringLiteral("正在识别…")
                                   && arrow == QStringLiteral("箭头 (A)")
@@ -158,7 +160,8 @@ int main(int argc, char **argv)
                                   && exportTitle == QStringLiteral("保存")
                                    && exportFolder == QStringLiteral("选择文件夹")
                                    && insertText == QStringLiteral("插入文本")
-                                   && textAbove == QStringLiteral("上方") && textBelow == QStringLiteral("下方"));
+                                    && textAbove == QStringLiteral("上方") && textBelow == QStringLiteral("下方")
+                                    && textColor == QStringLiteral("文字颜色"));
         std::printf("%s locale=%s locales=%s capture=[%s] loading=[%s] arrow=[%s] pinFail=[%s] pinPending=[%s] historyEmpty=[%s] preview=[%s] hidden=[%s] save=[%s] dropdown=[%s] adjust=[%s]\n",
                     ok ? "PASS" : "FAIL", qPrintable(locale),
                     qPrintable(I18n::availableLocales().join(QLatin1Char(','))),

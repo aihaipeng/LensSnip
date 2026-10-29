@@ -75,6 +75,7 @@ public:
         int direction = 0;                        // 0 inline, 1 horizontal, 2 above, 3 below the upright shaft.
         bool bold = false;
         bool italic = false;
+        QColor color;                             // Invalid follows the arrow color.
     };
     // Embedded mode: the same annotation engine as a child canvas inside a pin
     // window. The pin toolbar arms tools; the option strip detaches as a small

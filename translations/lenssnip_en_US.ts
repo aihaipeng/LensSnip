@@ -653,6 +653,10 @@
         <translation>Insert text</translation>
     </message>
     <message>
+        <source>文字颜色</source>
+        <translation>Text color</translation>
+    </message>
+    <message>
         <source>关闭</source>
         <translation>Close</translation>
     </message>

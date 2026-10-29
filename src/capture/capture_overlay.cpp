@@ -72,6 +72,7 @@
 #include <dwmapi.h>
 #include <imm.h>
 #include <algorithm>
+#include <limits>
 
 namespace {
 // Keep the normal combo popup behavior while painting the current text centered.
@@ -3472,9 +3473,10 @@ class CommentDialog : public QDialog
 {
 public:
     CommentDialog(const QString &text, const CaptureOverlay::CommentStyle &style,
-                  const QFont &automaticFont, QWidget *parent);
+                  const QColor &arrowColor, const QVector<ScreenFrame> &frames, QWidget *parent);
     QString textValue() const { return m_text; }
     CaptureOverlay::CommentStyle styleValue() const { return m_style; }
+    std::function<void()> changed;
 
 private:
     bool eventFilter(QObject *object, QEvent *event) override;
@@ -3490,7 +3492,7 @@ private:
 };
 
 CommentDialog::CommentDialog(const QString &text, const CaptureOverlay::CommentStyle &style,
-                             const QFont &automaticFont, QWidget *parent)
+                             const QColor &arrowColor, const QVector<ScreenFrame> &frames, QWidget *parent)
     : QDialog(parent), m_text(text), m_style(style)
 {
     const auto tr = [](const char *text) {
@@ -3503,7 +3505,7 @@ CommentDialog::CommentDialog(const QString &text, const CaptureOverlay::CommentS
         "QLabel[commentLabel=\"true\"]{color:#ffffff;font-weight:600;}"
         "QLabel#commentTitle{font-size:16px;font-weight:600;}"
         "QLineEdit{color:#f4f5f8;background:#111216;border:1px solid #777980;border-radius:8px;"
-        "padding:0 12px;selection-background-color:#303138;}"
+        "padding:0 12px;font-size:16px;selection-background-color:#303138;}"
         "QComboBox{color:#f4f5f8;background:#111216;border:1px solid #777980;border-radius:6px;"
         "padding:0 24px 0 10px;font-size:14px;}"
         "QComboBox QLineEdit{border:none;padding:0;background:transparent;font-size:14px;}"
@@ -3619,6 +3621,9 @@ CommentDialog::CommentDialog(const QString &text, const CaptureOverlay::CommentS
     format->setSpacing(8);
     format->addWidget(m_bold);
     format->addWidget(m_italic);
+    auto *color = colorButton(m_style.color.isValid() ? m_style.color : arrowColor, tr("文字颜色"));
+    color->setObjectName(QStringLiteral("commentColor"));
+    format->addWidget(color);
     fontRow->addLayout(format);
     root->addLayout(fontRow);
     root->addSpacing(16);
@@ -3674,29 +3679,17 @@ CommentDialog::CommentDialog(const QString &text, const CaptureOverlay::CommentS
     actions->addWidget(ok);
     root->addLayout(actions);
 
-    connect(m_edit, &QLineEdit::textChanged, this, [this](const QString &value) { m_text = value; });
-    connect(m_direction, &QButtonGroup::idClicked, this, [this](int index) {
-        m_style.direction = index;
-    });
-    const auto updatePreview = [this, automaticFont] {
-        QFont font = automaticFont;
-        font.setFamily(m_style.family);
-        if (m_style.font > 0) font.setPointSizeF(m_style.font);
-        font.setBold(m_style.bold);
-        font.setItalic(m_style.italic);
-        m_edit->setFont(font);
-        m_edit->setFixedHeight(qMax(48, m_edit->fontMetrics().height() + 20));
-        for (QWidget *widget = m_edit->parentWidget(); widget; widget = widget->parentWidget()) {
-            widget->layout()->invalidate();
-            widget->updateGeometry();
-            if (widget == this) break;
-        }
-        if (!isVisible()) return;
-        adjustSize();
-        const QRect available = screen()->availableGeometry();
-        move(qBound(available.left(), x(), qMax(available.left(), available.right() - width() + 1)),
-             qBound(available.top(), y(), qMax(available.top(), available.bottom() - height() + 1)));
+    const auto updatePreview = [this] {
+        if (changed) changed();
     };
+    connect(m_edit, &QLineEdit::textChanged, this, [this, updatePreview](const QString &value) {
+        m_text = value;
+        updatePreview();
+    });
+    connect(m_direction, &QButtonGroup::idClicked, this, [this, updatePreview](int index) {
+        m_style.direction = index;
+        updatePreview();
+    });
     connect(m_font, &QFontComboBox::currentFontChanged, this, [this, updatePreview](const QFont &font) {
         m_style.family = font.family();
         updatePreview();
@@ -3713,6 +3706,45 @@ CommentDialog::CommentDialog(const QString &text, const CaptureOverlay::CommentS
         m_style.italic = on;
         updatePreview();
     });
+    connect(color, &QToolButton::clicked, this, [this, color, arrowColor, frames, updatePreview] {
+        const QColor previous = m_style.color;
+        auto *palette = new ColorDialog(previous.isValid() ? previous : arrowColor, this);
+        palette->setAttribute(Qt::WA_DeleteOnClose);
+        palette->setWindowTitle(QCoreApplication::translate("CaptureOverlay", "文字颜色"));
+        const auto previewColor = [this, color, arrowColor, updatePreview](const QColor &value) {
+            m_style.color = value;
+            const qreal dpr = color->devicePixelRatioF();
+            QPixmap chip(qCeil(24 * dpr), qCeil(24 * dpr));
+            chip.setDevicePixelRatio(dpr);
+            QPainter painter(&chip);
+            for (int y = 0; y < 24; y += 4)
+                for (int x = 0; x < 24; x += 4)
+                    painter.fillRect(x, y, 4, 4, (x / 4 + y / 4) % 2 ? QColor("#979aa3") : QColor("#d7d8dc"));
+            painter.fillRect(QRect(0, 0, 24, 24), value.isValid() ? value : arrowColor);
+            painter.end();
+            color->setIcon(QIcon(chip));
+            color->setIconSize(QSize(24, 24));
+            updatePreview();
+        };
+        connect(palette, &QColorDialog::currentColorChanged, this, previewColor);
+        connect(palette, &ColorDialog::screenPickRequested, palette, [palette, frames] {
+            QPointer<ColorDialog> guard(palette);
+            palette->hide();
+            ScreenColorPicker picker(frames, palette);
+            const bool accepted = picker.exec() == QDialog::Accepted && picker.pickedColor().isValid();
+            if (!guard) return;
+            if (accepted) palette->setCurrentColor(picker.pickedColor());
+            palette->show();
+            palette->raise();
+            palette->activateWindow();
+        });
+        connect(palette, &QDialog::finished, this, [color, previous, previewColor](int result) {
+            if (result != QDialog::Accepted) previewColor(previous);
+            color->setFocus(Qt::OtherFocusReason);
+        });
+        palette->open();
+        updatePreview();
+    });
     styleDialog(this, false);
     layout()->setContentsMargins(24, 24, 24, 24);
     auto *surface = findChild<QWidget *>(QStringLiteral("dialogSurface"));
@@ -3727,13 +3759,12 @@ CommentDialog::CommentDialog(const QString &text, const CaptureOverlay::CommentS
         control->setProperty("kbdFocus", false);
         control->installEventFilter(this);
     }
-    QList<QWidget *> tabOrder{m_edit, m_font, m_size, m_bold, m_italic};
+    QList<QWidget *> tabOrder{m_edit, m_font, m_size, m_bold, m_italic, color};
     for (int i = 0; i < 4; ++i) tabOrder.append(m_direction->button(i));
     tabOrder.append(cancel);
     tabOrder.append(ok);
     tabOrder.append(close);
     for (int i = 1; i < tabOrder.size(); ++i) setTabOrder(tabOrder[i - 1], tabOrder[i]);
-    updatePreview();
     m_edit->setFocus(Qt::OtherFocusReason);
 }
 
@@ -3761,32 +3792,70 @@ bool CommentDialog::eventFilter(QObject *object, QEvent *event)
 void CaptureOverlay::editArrowComment(int index)
 {
     if (index < 0 || index >= m_anns.size() || m_anns[index].tool != ATool::Arrow) return;
-    const Annotation &ann = m_anns[index];
+    const Annotation ann = m_anns[index];
     // A stored comment keeps its own style; a fresh one starts from the current defaults.
     const CommentStyle initial = ann.comment.isEmpty() ? defaultCommentStyle() : ann.commentStyle;
-    Annotation preview = ann;
-    preview.commentStyle = initial;
-    preview.commentStyle.font = 0;
-    CommentDialog dialog(ann.comment, initial, commentFont(preview), this);
+    CommentDialog dialog(ann.comment, initial, ann.color, m_frames, this);
     dialog.adjustSize();
-    // Center on the arrow's midpoint, then keep the frame inside the screen.
     const QPoint anchor = mapToGlobal(((QPointF(ann.a) + QPointF(ann.b)) * 0.5).toPoint());
     const QScreen *screen = QGuiApplication::screenAt(anchor);
     if (!screen) screen = QGuiApplication::primaryScreen();
     const QRect available = screen->availableGeometry();
-    const QSize size = dialog.size();
-    const int maxX = qMax(available.left(), available.right() - size.width() + 1);
-    const int maxY = qMax(available.top(), available.bottom() - size.height() + 1);
-    dialog.move(qBound(available.left(), anchor.x() - size.width() / 2, maxX),
-                qBound(available.top(), anchor.y() - size.height() / 2, maxY));
-    if (dialog.exec() != QDialog::Accepted) { setFocus(); return; }
+    const auto placeCard = [&](QWidget *card) {
+        const Annotation &preview = m_anns[index];
+        QRectF bounds = QRectF(preview.a, preview.b).normalized().adjusted(
+            -preview.pen * 2, -preview.pen * 2, preview.pen * 2, preview.pen * 2);
+        QPainterPath text, hole;
+        commentPaths(preview, text, hole);
+        if (!hole.isEmpty()) {
+            const QPointF mid = (QPointF(preview.a) + QPointF(preview.b)) * 0.5;
+            QTransform turn;
+            turn.translate(mid.x(), mid.y());
+            turn.rotate(commentAngle(preview));
+            turn.translate(-mid.x(), -mid.y());
+            bounds = bounds.united(turn.map(hole).boundingRect());
+        }
+        const QRect avoid(mapToGlobal(bounds.topLeft().toPoint()), bounds.toAlignedRect().size());
+        if (card->isVisible() && !card->geometry().intersects(avoid.adjusted(-16, -16, 16, 16))) return;
+        const QSize size = card->size();
+        const QList<QPoint> positions{
+            QPoint(anchor.x() - size.width() / 2, avoid.bottom() + 17),
+            QPoint(anchor.x() - size.width() / 2, avoid.top() - size.height() - 16),
+            QPoint(avoid.right() + 17, anchor.y() - size.height() / 2),
+            QPoint(avoid.left() - size.width() - 16, anchor.y() - size.height() / 2)};
+        int leastOverlap = std::numeric_limits<int>::max();
+        QPoint best;
+        for (const QPoint &position : positions) {
+            const QPoint fitted(qBound(available.left(), position.x(), qMax(available.left(), available.right() - size.width() + 1)),
+                                qBound(available.top(), position.y(), qMax(available.top(), available.bottom() - size.height() + 1)));
+            const QRect overlap = QRect(fitted, size).intersected(avoid.adjusted(-16, -16, 16, 16));
+            const int area = overlap.width() * overlap.height();
+            if (area < leastOverlap) { best = fitted; leastOverlap = area; }
+            if (area == 0) break;
+        }
+        card->move(best);
+    };
+    dialog.changed = [&] {
+        m_anns[index].comment = dialog.textValue().trimmed();
+        m_anns[index].commentStyle = dialog.styleValue();
+        placeCard(&dialog);
+        for (auto *palette : dialog.findChildren<ColorDialog *>())
+            if (palette->isVisible()) placeCard(palette);
+        update();
+    };
+    placeCard(&dialog);
+    if (m_inspector) m_inspector->hide();
+    const int result = dialog.exec();
+    m_anns[index] = ann;                           // Restore before cancellation or the single undo snapshot.
+    update();
+    if (result != QDialog::Accepted) { setFocus(); return; }
     const QString text = dialog.textValue().trimmed();
     const CommentStyle style = dialog.styleValue();
     setFocus();
     saveCommentStyle(style);
     const auto same = [](const CommentStyle &a, const CommentStyle &b) {
         return a.family == b.family && qFuzzyCompare(a.font + 1.0, b.font + 1.0)
-            && a.direction == b.direction && a.bold == b.bold && a.italic == b.italic;
+            && a.direction == b.direction && a.bold == b.bold && a.italic == b.italic && a.color == b.color;
     };
     if (text == ann.comment && same(style, ann.commentStyle)) return;
     pushUndo();

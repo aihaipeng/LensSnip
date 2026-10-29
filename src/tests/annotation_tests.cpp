@@ -4,6 +4,7 @@
 #include "shared/settings.h"
 #include "tests/test_support.h"
 #include "shared/widgets.h"
+#include "shared/dialog_chrome.h"
 #include "pin/pin_window.h"
 #include "longshot/long_capture.h"
 #include "text/cards/ocr_dialog.h"
@@ -1009,12 +1010,13 @@ int CaptureOverlay::testArrowComment(const QString &previewPath)
         auto *size = dialog->findChild<QComboBox *>(QStringLiteral("commentSize"));
         auto *bold = dialog->findChild<QToolButton *>(QStringLiteral("commentBold"));
         auto *italic = dialog->findChild<QToolButton *>(QStringLiteral("commentItalic"));
+        auto *color = dialog->findChild<QToolButton *>(QStringLiteral("commentColor"));
         auto *style = dialog->findChild<QToolButton *>(QStringLiteral("commentStyle"));
         auto *directions = dialog->findChild<QWidget *>(QStringLiteral("commentDirections"));
         auto *group = dialog->findChild<QButtonGroup *>(QStringLiteral("commentDirection"));
         auto *fontLabel = dialog->findChild<QLabel *>(QStringLiteral("commentFontLabel"));
         auto *directionLabel = dialog->findChild<QLabel *>(QStringLiteral("commentDirectionLabel"));
-        check(surface && edit && font && size && bold && italic && !style && directions && group
+        check(surface && edit && font && size && bold && italic && color && !style && directions && group
                   && fontLabel && directionLabel, "the card exposes all prototype controls");
         const auto position = [surface](QWidget *widget) { return widget->mapTo(surface, QPoint()); };
         check(dialog->windowFlags().testFlag(Qt::FramelessWindowHint) && surface->width() == 500
@@ -1022,7 +1024,8 @@ int CaptureOverlay::testArrowComment(const QString &previewPath)
                   && edit->width() == 458 && size->width() == 52 && size->height() == 32,
               "the custom card matches the 500px prototype and blank input");
         check(position(font).x() == position(directions).x()
-                  && position(italic).x() + italic->width() == position(edit).x() + edit->width()
+                  && position(color).x() + color->width() == position(edit).x() + edit->width()
+                  && position(color).x() == position(italic).x() + italic->width() + 8
                   && position(directions).x() + directions->width() == position(edit).x() + edit->width()
                   && position(font).y() == position(italic).y()
                   && position(font).y() == position(size).y(),
@@ -1032,11 +1035,17 @@ int CaptureOverlay::testArrowComment(const QString &previewPath)
                   && fontLabel->font().weight() >= QFont::DemiBold
                   && directionLabel->font().weight() >= QFont::DemiBold,
               "font and direction labels are white and semibold");
-        check(group->buttons().size() == 4
-                  && !dialog->findChild<QWidget *>(QStringLiteral("commentTextColor")),
-              "four directions remain and text-style controls are removed");
-        check(edit->font() == commentFont(overlay.m_anns[0]),
-              "the input initially previews the same automatic font as the arrow");
+        check(group->buttons().size() == 4 && color->accessibleName() == QStringLiteral("文字颜色")
+                  && italic->nextInFocusChain() == color,
+              "four directions and the text color button retain accessible names and keyboard order");
+        check(edit->font().pixelSize() == 16 && !edit->font().bold() && !edit->font().italic(),
+              "the input is a fixed-size editor, not the formatting preview");
+        edit->setText(QStringLiteral("Draft"));
+        check(overlay.m_anns[0].comment == QStringLiteral("Draft") && overlay.cropped().toImage() != plain
+                  && overlay.m_undoStack.isEmpty(),
+              "typing on a fresh arrow immediately displays its first text without an undo step");
+        edit->clear();
+        check(overlay.cropped().toImage() == plain, "clearing fresh preview text immediately restores the shaft");
         QImage fontRow(260, 32, QImage::Format_ARGB32_Premultiplied);
         fontRow.fill(QColor("#18191d"));
         QStyleOptionViewItem rowOption;
@@ -1163,6 +1172,37 @@ int CaptureOverlay::testArrowComment(const QString &previewPath)
     check(sawExisting && controlsOk && overlay.m_anns[0].comment == QStringLiteral("I")
               && overlay.m_undoStack.size() == 1,
           "double-click reopens text, direction, font, size and B/I; cancel keeps it");
+    auto chooseTextColor = [&](QDialog *dialog, const QColor &value, bool accept,
+                               const std::function<void(ColorDialog *)> &inspect = {}) {
+        QTimer poll, timeout;
+        QEventLoop waiting;
+        poll.setInterval(10);
+        timeout.setSingleShot(true);
+        QObject::connect(&timeout, &QTimer::timeout, [&] { check(false, "text color palette did not finish"); });
+        QObject::connect(&poll, &QTimer::timeout, [&] {
+            for (QWidget *widget : QApplication::topLevelWidgets()) {
+                auto *palette = qobject_cast<ColorDialog *>(widget);
+                if (!palette || !palette->isVisible()) continue;
+                poll.stop();
+                check(palette->parentWidget() == dialog, "text color uses the shared palette owned by the text card");
+                if (value.isValid()) {
+                    palette->setCurrentColor(value);
+                    check(overlay.m_anns[0].commentStyle.color == value
+                              && overlay.m_anns[0].color == arrow.color,
+                          "palette edits preview the text color without recoloring the shaft");
+                }
+                if (inspect) inspect(palette);
+                if (accept) palette->accept(); else palette->reject();
+                waiting.quit();
+                return;
+            }
+        });
+        timeout.start(5000);
+        poll.start();
+        dialog->findChild<QToolButton *>(QStringLiteral("commentColor"))->click();
+        waiting.exec();
+        timeout.stop();
+    };
     openComment(QString(), false, [&](QDialog *dialog) {
         auto *edit = dialog->findChild<QLineEdit *>(QStringLiteral("commentText"));
         auto *font = dialog->findChild<QFontComboBox *>(QStringLiteral("commentFont"));
@@ -1173,60 +1213,139 @@ int CaptureOverlay::testArrowComment(const QString &previewPath)
         const int compactHeight = dialog->height();
         const int undoBefore = overlay.m_undoStack.size();
         const CommentStyle defaultsBefore = defaultCommentStyle();
+        const QFont editorFont = edit->font();
+        const QImage before = overlay.cropped().toImage();
+        edit->clear();
+        check(overlay.m_anns[0].comment.isEmpty() && overlay.cropped().toImage() == plain,
+              "clearing the editor immediately restores the uncut arrow");
         edit->setText(QStringLiteral("Hello 文本"));
         edit->setCursorPosition(3);
-        const QImage initialPixels = edit->grab().toImage();
+        check(overlay.m_anns[0].comment == edit->text() && overlay.cropped().toImage() != before,
+              "typing immediately draws the new text on the screenshot arrow");
+        QApplication::processEvents();
+        const QImage paintedText = overlay.grab().toImage();
+        const QImage initialPixels = overlay.cropped().toImage();
         font->setCurrentFont(QFont(QStringLiteral("Arial")));
-        check(edit->font().family() == QStringLiteral("Arial") && edit->cursorPosition() == 3,
-              "changing family immediately updates the input without resetting the cursor");
+        check(overlay.m_anns[0].commentStyle.family == QStringLiteral("Arial") && edit->cursorPosition() == 3,
+              "changing family immediately updates the arrow without resetting the editor cursor");
         size->setCurrentIndex(size->findData(20));
-        check(qAbs(edit->font().pointSizeF() - 20) < 0.01 && !edit->font().bold() && !edit->font().italic(),
-              "changing point size immediately updates the input");
-        const QImage sizePixels = edit->grab().toImage();
-        check(sizePixels != initialPixels, "point size changes repaint the input text");
+        check(qAbs(commentFont(overlay.m_anns[0]).pointSizeF() - 20) < 0.01,
+              "changing point size immediately updates the arrow glyph font");
+        const QImage sizePixels = overlay.cropped().toImage();
+        check(sizePixels != initialPixels, "point size changes repaint the arrow text");
         bold->click();
-        check(edit->font().bold() && edit->grab().toImage() != sizePixels,
-              "bold immediately repaints the input with bold glyphs");
-        const QImage boldPixels = edit->grab().toImage();
+        check(overlay.m_anns[0].commentStyle.bold && overlay.cropped().toImage() != sizePixels,
+              "bold immediately repaints the screenshot arrow with bold glyphs");
+        QApplication::processEvents();
+        check(overlay.grab().toImage() != paintedText,
+              "the visible overlay paint changes while the text card remains open");
+        const QImage boldPixels = overlay.cropped().toImage();
         italic->click();
-        check(edit->font().italic() && edit->grab().toImage() != boldPixels,
-              "italic immediately repaints the input with italic glyphs");
+        check(overlay.m_anns[0].commentStyle.italic && overlay.cropped().toImage() != boldPixels,
+              "italic immediately repaints the screenshot arrow with italic glyphs");
         size->setCurrentIndex(size->findData(40));
         edit->setFocus(Qt::OtherFocusReason);
         QApplication::processEvents();
-        check(qAbs(edit->font().pointSizeF() - 40) < 0.01
-                  && edit->height() >= edit->fontMetrics().height() + 20
-                  && font->y() >= edit->y() + edit->height() + 16
-                  && dialog->height() == compactHeight + edit->height() - 48,
-              "large preview text grows the input instead of clipping it");
-        if (!previewPath.isEmpty()) surface->grab().save(previewPath + QStringLiteral(".preview40.png"));
+        check(qAbs(commentFont(overlay.m_anns[0]).pointSizeF() - 40) < 0.01
+                  && edit->font() == editorFont && edit->height() == 48 && dialog->height() == compactHeight,
+              "large formatting changes the arrow, not the editor font or card size");
+        if (!previewPath.isEmpty()) {
+            surface->grab().save(previewPath + QStringLiteral(".card-live.png"));
+            overlay.cropped().save(previewPath + QStringLiteral(".arrow-live40.png"));
+            const QRect visible = QRect(overlay.mapToGlobal(overlay.m_sel.topLeft()), overlay.m_sel.size())
+                                      .united(dialog->geometry()).adjusted(-10, -10, 10, 10)
+                                      .intersected(dialog->screen()->geometry());
+            dialog->screen()->grabWindow(0, visible.x(), visible.y(), visible.width(), visible.height())
+                .save(previewPath + QStringLiteral(".live-screen.png"));
+        }
         const QRect available = dialog->screen()->availableGeometry();
-        dialog->move(available.bottomRight() - QPoint(dialog->width() - 1, dialog->height() - 1));
         size->setCurrentIndex(size->findData(71));
         QApplication::processEvents();
-        check(qAbs(edit->font().pointSizeF() - 71) < 0.01
-                  && edit->height() >= edit->fontMetrics().height() + 20
-                  && font->y() >= edit->y() + edit->height() + 16
-                  && available.contains(dialog->geometry()),
-              "the maximum size stays visible and keeps the growing card inside the screen");
-        if (!previewPath.isEmpty()) surface->grab().save(previewPath + QStringLiteral(".preview71.png"));
+        check(qAbs(commentFont(overlay.m_anns[0]).pointSizeF() - 71) < 0.01
+                  && edit->font() == editorFont && available.contains(dialog->geometry()),
+              "the maximum arrow size preserves the fixed editor and on-screen card");
         size->setCurrentIndex(0);
         bold->click();
         italic->click();
         QApplication::processEvents();
-        Annotation expected = overlay.m_anns[0];
-        expected.commentStyle.family = QStringLiteral("Arial");
-        check(edit->font() == commentFont(expected) && edit->height() == 48
-                  && dialog->height() == compactHeight && edit->text() == QStringLiteral("Hello 文本"),
-              "automatic size restores the arrow-derived size and compact input without changing text");
+        check(qAbs(commentFont(overlay.m_anns[0]).pointSizeF() - (6.0 + arrow.pen * 0.382)) < 0.01
+                  && edit->font() == editorFont && edit->text() == QStringLiteral("Hello 文本"),
+              "automatic size restores the arrow-derived glyph size without changing the editor");
+        auto *direction = dialog->findChild<QButtonGroup *>(QStringLiteral("commentDirection"));
+        for (int i = 0; i < 4; ++i) {
+            direction->button(i)->click();
+            check(overlay.m_anns[0].commentStyle.direction == i, "direction changes immediately reach the arrow");
+        }
+        direction->button(0)->click();
+        size->setCurrentIndex(size->findData(20));
+        chooseTextColor(dialog, QColor("#00ff00"), false, [&](ColorDialog *palette) {
+            const QImage output = overlay.cropped().toImage();
+            int green = 0;
+            for (int y = 0; y < output.height(); ++y)
+                for (int x = 0; x < output.width(); ++x) {
+                    const QColor c = output.pixelColor(x, y);
+                    if (c.green() > 180 && c.red() < 40 && c.blue() < 40) ++green;
+                }
+            check(green > 20, "palette changes visibly recolor the arrow text before either dialog is confirmed");
+            if (!previewPath.isEmpty()) {
+                QApplication::processEvents();
+                palette->findChild<QWidget *>(QStringLiteral("dialogSurface"))->grab()
+                    .save(previewPath + QStringLiteral(".palette.png"));
+                overlay.cropped().save(previewPath + QStringLiteral(".green-text.png"));
+            }
+        });
+        check(!overlay.m_anns[0].commentStyle.color.isValid(),
+              "cancelling the palette restores the inherited arrow color");
+        chooseTextColor(dialog, QColor("#00ff00"), true);
+        const QImage opaqueColor = overlay.cropped().toImage();
+        chooseTextColor(dialog, QColor(0, 255, 0, 100), false, [&](ColorDialog *palette) {
+            check(overlay.cropped().toImage() != opaqueColor && palette->currentColor().alpha() == 100,
+                  "text alpha previews in the arrow output");
+        });
+        chooseTextColor(dialog, QColor("#0000ff"), false);
+        check(overlay.m_anns[0].commentStyle.color == QColor("#00ff00"),
+              "cancelling a later palette restores the previous text color");
+        chooseTextColor(dialog, QColor(), false, [&](ColorDialog *palette) {
+            check(palette->currentColor() == QColor("#00ff00"), "reopening the palette uses the live text color");
+            QTimer pickerPoll, pickerTimeout;
+            pickerPoll.setInterval(10);
+            pickerTimeout.setSingleShot(true);
+            QObject::connect(&pickerTimeout, &QTimer::timeout, [&] { check(false, "text screen picker did not finish"); });
+            bool sampled = false;
+            QObject::connect(&pickerPoll, &QTimer::timeout, [&] {
+                for (QWidget *widget : QApplication::topLevelWidgets()) {
+                    auto *picker = qobject_cast<ScreenColorPicker *>(widget);
+                    if (!picker || !picker->isVisible()) continue;
+                    pickerPoll.stop();
+                    const QPoint local = picker->mapFromGlobal(screen.topLeft() + QPoint(20, 20));
+                    QMouseEvent click(QEvent::MouseButtonPress, local, picker->mapToGlobal(local),
+                                      Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+                    QApplication::sendEvent(picker, &click);
+                    sampled = true;
+                    return;
+                }
+            });
+            pickerTimeout.start(5000);
+            pickerPoll.start();
+            palette->findChild<QPushButton *>(QStringLiteral("colorPickScreen"))->click();
+            pickerTimeout.stop();
+            check(sampled && palette->isVisible() && palette->currentColor() == QColor(20, 30, 40)
+                      && overlay.m_anns[0].commentStyle.color == QColor(20, 30, 40),
+                  "screen sampling returns to the palette and previews the sampled text color");
+        });
+        check(overlay.m_anns[0].commentStyle.color == QColor("#00ff00"),
+              "cancelling the palette after screen sampling restores its previous text color");
         const CommentStyle defaultsAfter = defaultCommentStyle();
-        check(overlay.m_anns[0].comment == QStringLiteral("I") && overlay.m_undoStack.size() == undoBefore
+        check(overlay.m_undoStack.size() == undoBefore
                   && defaultsAfter.family == defaultsBefore.family && defaultsAfter.font == defaultsBefore.font
-                  && defaultsAfter.bold == defaultsBefore.bold && defaultsAfter.italic == defaultsBefore.italic,
-              "preview changes neither the arrow, undo stack nor persisted defaults before confirmation");
+                  && defaultsAfter.bold == defaultsBefore.bold && defaultsAfter.italic == defaultsBefore.italic
+                  && defaultsAfter.color == defaultsBefore.color,
+              "live preview leaves the undo stack and persisted defaults unchanged before confirmation");
+        check(!dialog->geometry().contains(overlay.mapToGlobal(mid)), "the preview card does not cover the arrow midpoint");
     });
     check(overlay.m_anns[0].comment == QStringLiteral("I") && overlay.m_undoStack.size() == 1
-              && overlay.m_anns[0].commentStyle.family == CommentStyle{}.family,
+              && overlay.m_anns[0].commentStyle.family == CommentStyle{}.family
+              && !overlay.m_anns[0].commentStyle.color.isValid() && overlay.cropped().toImage() == withComment,
           "cancelling live preview preserves the arrow text and style");
     {
         QTimer keys;
@@ -1244,6 +1363,8 @@ int CaptureOverlay::testArrowComment(const QString &previewPath)
                 auto *edit = dialog->findChild<QLineEdit *>(QStringLiteral("commentText"));
                 check(edit && edit->selectedText() == QStringLiteral("I"), "reopening selects the existing text");
                 edit->setText(QStringLiteral("Cancelled"));
+                check(overlay.m_anns[0].comment == QStringLiteral("Cancelled"),
+                      "Escape cancels an already visible arrow preview, not only editor text");
                 QKeyEvent escape(QEvent::KeyPress, Qt::Key_Escape, Qt::NoModifier);
                 QApplication::sendEvent(edit, &escape);
                 sawKeys = true;
@@ -1282,13 +1403,41 @@ int CaptureOverlay::testArrowComment(const QString &previewPath)
         if (font) font->setCurrentFont(QFont(QStringLiteral("Arial")));
         if (auto *bold = dialog->findChild<QToolButton *>(QStringLiteral("commentBold"))) bold->click();
         if (auto *italic = dialog->findChild<QToolButton *>(QStringLiteral("commentItalic"))) italic->click();
+        chooseTextColor(dialog, QColor("#00ff00"), true);
     });
     const CommentStyle styled = overlay.m_anns[0].commentStyle;
     check(overlay.m_anns[0].comment == QStringLiteral("Styled")
               && styled.direction == 1 && qRound(styled.font) == 20 && styled.bold && styled.italic
-              && styled.family == QStringLiteral("Arial")
+              && styled.family == QStringLiteral("Arial") && styled.color == QColor("#00ff00")
               && overlay.m_undoStack.size() == undoBeforeStyle + 1,
           "confirming applies direction, font, size and B/I in one undo step");
+    overlay.undoAnnotation();
+    check(overlay.m_anns[0].comment == QStringLiteral("I") && !overlay.m_anns[0].commentStyle.color.isValid()
+              && overlay.cropped().toImage() == withComment,
+          "one undo restores the pre-dialog text, style, color and output pixels");
+    overlay.redoAnnotation();
+    check(overlay.m_anns[0].comment == QStringLiteral("Styled")
+              && overlay.m_anns[0].commentStyle.color == QColor("#00ff00"),
+          "one redo restores the committed live-preview result including its text color");
+    openComment(QString(), false, [&](QDialog *dialog) {
+        chooseTextColor(dialog, QColor(), false, [&](ColorDialog *palette) {
+            check(palette->currentColor() == QColor("#00ff00"), "re-editing restores the committed custom text color");
+        });
+    });
+    overlay.undoAnnotation();
+    const int redoBeforeCancel = overlay.m_redoStack.size();
+    const CommentStyle defaultsBeforeCancel = defaultCommentStyle();
+    openComment(QString(), false, [&](QDialog *dialog) {
+        dialog->findChild<QLineEdit *>(QStringLiteral("commentText"))->setText(QStringLiteral("Discard"));
+        dialog->findChild<QComboBox *>(QStringLiteral("commentSize"))->setCurrentIndex(10);
+        check(overlay.m_redoStack.size() == redoBeforeCancel, "preview does not discard an existing redo branch");
+        dialog->findChild<QToolButton *>(QStringLiteral("commentClose"))->click();
+    });
+    check(overlay.m_anns[0].comment == QStringLiteral("I") && overlay.m_redoStack.size() == redoBeforeCancel
+              && defaultCommentStyle().color == defaultsBeforeCancel.color
+              && overlay.cropped().toImage() == withComment,
+          "closing the card restores the pre-preview arrow and preserves redo and defaults");
+    overlay.redoAnnotation();
 
     CommentStyle &flat = overlay.m_anns[0].commentStyle;
     flat.direction = 1;
@@ -1332,9 +1481,8 @@ int CaptureOverlay::testArrowComment(const QString &previewPath)
         openComment(QString(), false, [&](QDialog *dialog) {
             check(dialog->findChild<QButtonGroup *>(QStringLiteral("commentDirection"))->checkedId() == direction,
                   "re-editing restores the side direction");
-            check(dialog->findChild<QLineEdit *>(QStringLiteral("commentText"))->font()
-                      == commentFont(overlay.m_anns[0]),
-                  "re-editing immediately previews the committed font, size and B/I");
+            check(dialog->findChild<QLineEdit *>(QStringLiteral("commentText"))->font().pixelSize() == 16,
+                  "re-editing keeps the editor font fixed while the arrow retains its style");
             dialog->findChild<QButtonGroup *>(QStringLiteral("commentDirection"))->button(0)->click();
         });
         check(overlay.m_anns[0].commentStyle.direction == direction,
@@ -1380,16 +1528,19 @@ int CaptureOverlay::testArrowComment(const QString &previewPath)
     saved.direction = 3;
     saved.bold = true;
     saved.italic = true;
+    saved.color = QColor(1, 2, 3, 128);
     saveCommentStyle(saved);
     const CommentStyle loaded = defaultCommentStyle();
     check(loaded.family == saved.family && qFuzzyCompare(loaded.font + 1.0, saved.font + 1.0)
               && loaded.direction == saved.direction && loaded.bold == saved.bold
-              && loaded.italic == saved.italic,
+              && loaded.italic == saved.italic && loaded.color == saved.color,
           "comment style round-trips through the settings file");
     saveCommentStyle(CommentStyle{});                    // Keep later tests on the defaults.
     {
         LensSnipSettings settings;
         settings.remove(QStringLiteral("Capture/EmbedTextDirection"));
+        settings.setValue(QStringLiteral("Capture/EmbedTextColor"), QStringLiteral("not-a-color"));
+        check(!defaultCommentStyle().color.isValid(), "invalid persisted text colors fall back to the arrow");
         settings.setValue(QStringLiteral("Capture/EmbedTextFollowArrow"), false);
         check(defaultCommentStyle().direction == 1, "legacy horizontal defaults remain compatible");
         settings.setValue(QStringLiteral("Capture/EmbedTextDirection"), 99);
@@ -1457,6 +1608,6 @@ int CaptureOverlay::testArrowComment(const QString &previewPath)
         overlay.update();
         overlay.cropped().toImage().save(previewPath + QStringLiteral(".diagonal.png"));
     }
-    std::puts("PASS: insert-text card, four directions, font, size, B/I, arrow color, cutout, undo and output");
+    std::puts("PASS: live arrow text, font, size, B/I, directions, text palette, cancel, undo and output");
     return 0;
 }
