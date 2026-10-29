@@ -42,6 +42,7 @@
 #include <QFocusEvent>
 #include <QLabel>
 #include <QFontInfo>
+#include <QStyleOptionViewItem>
 #include <QTemporaryDir>
 #include <functional>
 #include <qt_windows.h>
@@ -972,6 +973,7 @@ int CaptureOverlay::testArrowComment(const QString &previewPath)
                 auto *dialog = qobject_cast<QDialog *>(w);
                 if (!dialog || !dialog->isVisible()
                     || dialog->windowTitle() != QStringLiteral("插入文本")) continue;
+                poll.stop();
                 if (inspect) inspect(dialog);
                 if (accept) {
                     if (auto *edit = dialog->findChild<QLineEdit *>(QStringLiteral("commentText")))
@@ -1033,6 +1035,39 @@ int CaptureOverlay::testArrowComment(const QString &previewPath)
         check(group->buttons().size() == 4
                   && !dialog->findChild<QWidget *>(QStringLiteral("commentTextColor")),
               "four directions remain and text-style controls are removed");
+        check(edit->font() == commentFont(overlay.m_anns[0]),
+              "the input initially previews the same automatic font as the arrow");
+        QImage fontRow(260, 32, QImage::Format_ARGB32_Premultiplied);
+        fontRow.fill(QColor("#18191d"));
+        QStyleOptionViewItem rowOption;
+        rowOption.initFrom(font->view());
+        rowOption.font = font->font();
+        rowOption.rect = fontRow.rect();
+        rowOption.displayAlignment = Qt::AlignLeft;
+        QPainter rowPainter(&fontRow);
+        rowPainter.setPen(rowOption.palette.color(QPalette::Text));
+        font->itemDelegate()->paint(&rowPainter, rowOption,
+                                    font->model()->index(font->findText(QStringLiteral("Arial")), 0));
+        rowPainter.end();
+        int inkTop = fontRow.height(), inkBottom = -1;
+        for (int y = 0; y < fontRow.height(); ++y)
+            for (int x = 24; x < fontRow.width(); ++x) {
+                const QColor color = fontRow.pixelColor(x, y);
+                if (color.red() > 150 && color.green() > 150 && color.blue() > 150) {
+                    inkTop = qMin(inkTop, y);
+                    inkBottom = qMax(inkBottom, y);
+                }
+            }
+        check(inkBottom >= inkTop && inkBottom - inkTop + 1 <= 14,
+              "the actual font delegate no longer enlarges the list text");
+        if (!previewPath.isEmpty()) {
+            font->view()->scrollTo(font->model()->index(0, 0), QAbstractItemView::PositionAtTop);
+            font->showPopup();
+            font->view()->scrollTo(font->model()->index(0, 0), QAbstractItemView::PositionAtTop);
+            QApplication::processEvents();
+            font->view()->window()->grab().save(previewPath + QStringLiteral(".font-list.png"));
+            font->hidePopup();
+        }
         for (auto *button : group->buttons())
             check(qAbs(button->width() - group->button(0)->width()) <= 1,
                   "direction segments are equal width");
@@ -1128,6 +1163,71 @@ int CaptureOverlay::testArrowComment(const QString &previewPath)
     check(sawExisting && controlsOk && overlay.m_anns[0].comment == QStringLiteral("I")
               && overlay.m_undoStack.size() == 1,
           "double-click reopens text, direction, font, size and B/I; cancel keeps it");
+    openComment(QString(), false, [&](QDialog *dialog) {
+        auto *edit = dialog->findChild<QLineEdit *>(QStringLiteral("commentText"));
+        auto *font = dialog->findChild<QFontComboBox *>(QStringLiteral("commentFont"));
+        auto *size = dialog->findChild<QComboBox *>(QStringLiteral("commentSize"));
+        auto *bold = dialog->findChild<QToolButton *>(QStringLiteral("commentBold"));
+        auto *italic = dialog->findChild<QToolButton *>(QStringLiteral("commentItalic"));
+        auto *surface = dialog->findChild<QWidget *>(QStringLiteral("dialogSurface"));
+        const int compactHeight = dialog->height();
+        const int undoBefore = overlay.m_undoStack.size();
+        const CommentStyle defaultsBefore = defaultCommentStyle();
+        edit->setText(QStringLiteral("Hello 文本"));
+        edit->setCursorPosition(3);
+        const QImage initialPixels = edit->grab().toImage();
+        font->setCurrentFont(QFont(QStringLiteral("Arial")));
+        check(edit->font().family() == QStringLiteral("Arial") && edit->cursorPosition() == 3,
+              "changing family immediately updates the input without resetting the cursor");
+        size->setCurrentIndex(size->findData(20));
+        check(qAbs(edit->font().pointSizeF() - 20) < 0.01 && !edit->font().bold() && !edit->font().italic(),
+              "changing point size immediately updates the input");
+        const QImage sizePixels = edit->grab().toImage();
+        check(sizePixels != initialPixels, "point size changes repaint the input text");
+        bold->click();
+        check(edit->font().bold() && edit->grab().toImage() != sizePixels,
+              "bold immediately repaints the input with bold glyphs");
+        const QImage boldPixels = edit->grab().toImage();
+        italic->click();
+        check(edit->font().italic() && edit->grab().toImage() != boldPixels,
+              "italic immediately repaints the input with italic glyphs");
+        size->setCurrentIndex(size->findData(40));
+        edit->setFocus(Qt::OtherFocusReason);
+        QApplication::processEvents();
+        check(qAbs(edit->font().pointSizeF() - 40) < 0.01
+                  && edit->height() >= edit->fontMetrics().height() + 20
+                  && font->y() >= edit->y() + edit->height() + 16
+                  && dialog->height() == compactHeight + edit->height() - 48,
+              "large preview text grows the input instead of clipping it");
+        if (!previewPath.isEmpty()) surface->grab().save(previewPath + QStringLiteral(".preview40.png"));
+        const QRect available = dialog->screen()->availableGeometry();
+        dialog->move(available.bottomRight() - QPoint(dialog->width() - 1, dialog->height() - 1));
+        size->setCurrentIndex(size->findData(71));
+        QApplication::processEvents();
+        check(qAbs(edit->font().pointSizeF() - 71) < 0.01
+                  && edit->height() >= edit->fontMetrics().height() + 20
+                  && font->y() >= edit->y() + edit->height() + 16
+                  && available.contains(dialog->geometry()),
+              "the maximum size stays visible and keeps the growing card inside the screen");
+        if (!previewPath.isEmpty()) surface->grab().save(previewPath + QStringLiteral(".preview71.png"));
+        size->setCurrentIndex(0);
+        bold->click();
+        italic->click();
+        QApplication::processEvents();
+        Annotation expected = overlay.m_anns[0];
+        expected.commentStyle.family = QStringLiteral("Arial");
+        check(edit->font() == commentFont(expected) && edit->height() == 48
+                  && dialog->height() == compactHeight && edit->text() == QStringLiteral("Hello 文本"),
+              "automatic size restores the arrow-derived size and compact input without changing text");
+        const CommentStyle defaultsAfter = defaultCommentStyle();
+        check(overlay.m_anns[0].comment == QStringLiteral("I") && overlay.m_undoStack.size() == undoBefore
+                  && defaultsAfter.family == defaultsBefore.family && defaultsAfter.font == defaultsBefore.font
+                  && defaultsAfter.bold == defaultsBefore.bold && defaultsAfter.italic == defaultsBefore.italic,
+              "preview changes neither the arrow, undo stack nor persisted defaults before confirmation");
+    });
+    check(overlay.m_anns[0].comment == QStringLiteral("I") && overlay.m_undoStack.size() == 1
+              && overlay.m_anns[0].commentStyle.family == CommentStyle{}.family,
+          "cancelling live preview preserves the arrow text and style");
     {
         QTimer keys;
         keys.setInterval(10);
@@ -1232,6 +1332,9 @@ int CaptureOverlay::testArrowComment(const QString &previewPath)
         openComment(QString(), false, [&](QDialog *dialog) {
             check(dialog->findChild<QButtonGroup *>(QStringLiteral("commentDirection"))->checkedId() == direction,
                   "re-editing restores the side direction");
+            check(dialog->findChild<QLineEdit *>(QStringLiteral("commentText"))->font()
+                      == commentFont(overlay.m_anns[0]),
+                  "re-editing immediately previews the committed font, size and B/I");
             dialog->findChild<QButtonGroup *>(QStringLiteral("commentDirection"))->button(0)->click();
         });
         check(overlay.m_anns[0].commentStyle.direction == direction,

@@ -42,6 +42,7 @@
 #include <QDialog>
 #include <QLineEdit>
 #include <QFontComboBox>
+#include <QFontDatabase>
 #include <QFrame>
 #include <QButtonGroup>
 #include <QFocusEvent>
@@ -3450,10 +3451,28 @@ void CaptureOverlay::saveCurrentPreset()
     if (dialog.exec() == QDialog::Accepted) saveSizePreset(dialog.textValue());
 }
 
+class CommentFontDelegate : public QStyledItemDelegate
+{
+public:
+    using QStyledItemDelegate::QStyledItemDelegate;
+
+protected:
+    void initStyleOption(QStyleOptionViewItem *option, const QModelIndex &index) const override
+    {
+        QStyledItemDelegate::initStyleOption(option, index);
+        const QString family = index.data().toString();
+        if (QFontDatabase::writingSystems(family).contains(QFontDatabase::Latin))
+            option->font.setFamily(family);
+        option->font.setPixelSize(14);
+        option->fontMetrics = QFontMetrics(option->font);
+    }
+};
+
 class CommentDialog : public QDialog
 {
 public:
-    CommentDialog(const QString &text, const CaptureOverlay::CommentStyle &style, QWidget *parent);
+    CommentDialog(const QString &text, const CaptureOverlay::CommentStyle &style,
+                  const QFont &automaticFont, QWidget *parent);
     QString textValue() const { return m_text; }
     CaptureOverlay::CommentStyle styleValue() const { return m_style; }
 
@@ -3471,7 +3490,7 @@ private:
 };
 
 CommentDialog::CommentDialog(const QString &text, const CaptureOverlay::CommentStyle &style,
-                                             QWidget *parent)
+                             const QFont &automaticFont, QWidget *parent)
     : QDialog(parent), m_text(text), m_style(style)
 {
     const auto tr = [](const char *text) {
@@ -3484,7 +3503,7 @@ CommentDialog::CommentDialog(const QString &text, const CaptureOverlay::CommentS
         "QLabel[commentLabel=\"true\"]{color:#ffffff;font-weight:600;}"
         "QLabel#commentTitle{font-size:16px;font-weight:600;}"
         "QLineEdit{color:#f4f5f8;background:#111216;border:1px solid #777980;border-radius:8px;"
-        "padding:0 12px;font-size:16px;selection-background-color:#303138;}"
+        "padding:0 12px;selection-background-color:#303138;}"
         "QComboBox{color:#f4f5f8;background:#111216;border:1px solid #777980;border-radius:6px;"
         "padding:0 24px 0 10px;font-size:14px;}"
         "QComboBox QLineEdit{border:none;padding:0;background:transparent;font-size:14px;}"
@@ -3557,6 +3576,8 @@ CommentDialog::CommentDialog(const QString &text, const CaptureOverlay::CommentS
     m_font->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
     m_font->setFixedHeight(32);
     m_font->setAccessibleName(tr("字体"));
+    m_font->setItemDelegate(new CommentFontDelegate(m_font));
+    prepareComboPopup(m_font);
     fontLabel->setBuddy(m_font);
     m_font->view()->setMinimumWidth(200);
     fontRow->addWidget(m_font, 1);
@@ -3657,14 +3678,41 @@ CommentDialog::CommentDialog(const QString &text, const CaptureOverlay::CommentS
     connect(m_direction, &QButtonGroup::idClicked, this, [this](int index) {
         m_style.direction = index;
     });
-    connect(m_font, &QFontComboBox::currentFontChanged, this, [this](const QFont &font) {
+    const auto updatePreview = [this, automaticFont] {
+        QFont font = automaticFont;
+        font.setFamily(m_style.family);
+        if (m_style.font > 0) font.setPointSizeF(m_style.font);
+        font.setBold(m_style.bold);
+        font.setItalic(m_style.italic);
+        m_edit->setFont(font);
+        m_edit->setFixedHeight(qMax(48, m_edit->fontMetrics().height() + 20));
+        for (QWidget *widget = m_edit->parentWidget(); widget; widget = widget->parentWidget()) {
+            widget->layout()->invalidate();
+            widget->updateGeometry();
+            if (widget == this) break;
+        }
+        if (!isVisible()) return;
+        adjustSize();
+        const QRect available = screen()->availableGeometry();
+        move(qBound(available.left(), x(), qMax(available.left(), available.right() - width() + 1)),
+             qBound(available.top(), y(), qMax(available.top(), available.bottom() - height() + 1)));
+    };
+    connect(m_font, &QFontComboBox::currentFontChanged, this, [this, updatePreview](const QFont &font) {
         m_style.family = font.family();
+        updatePreview();
     });
-    connect(m_size, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int index) {
+    connect(m_size, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this, updatePreview](int index) {
         m_style.font = m_size->itemData(index).toDouble();
+        updatePreview();
     });
-    connect(m_bold, &QToolButton::toggled, this, [this](bool on) { m_style.bold = on; });
-    connect(m_italic, &QToolButton::toggled, this, [this](bool on) { m_style.italic = on; });
+    connect(m_bold, &QToolButton::toggled, this, [this, updatePreview](bool on) {
+        m_style.bold = on;
+        updatePreview();
+    });
+    connect(m_italic, &QToolButton::toggled, this, [this, updatePreview](bool on) {
+        m_style.italic = on;
+        updatePreview();
+    });
     styleDialog(this, false);
     layout()->setContentsMargins(24, 24, 24, 24);
     auto *surface = findChild<QWidget *>(QStringLiteral("dialogSurface"));
@@ -3685,6 +3733,7 @@ CommentDialog::CommentDialog(const QString &text, const CaptureOverlay::CommentS
     tabOrder.append(ok);
     tabOrder.append(close);
     for (int i = 1; i < tabOrder.size(); ++i) setTabOrder(tabOrder[i - 1], tabOrder[i]);
+    updatePreview();
     m_edit->setFocus(Qt::OtherFocusReason);
 }
 
@@ -3715,7 +3764,10 @@ void CaptureOverlay::editArrowComment(int index)
     const Annotation &ann = m_anns[index];
     // A stored comment keeps its own style; a fresh one starts from the current defaults.
     const CommentStyle initial = ann.comment.isEmpty() ? defaultCommentStyle() : ann.commentStyle;
-    CommentDialog dialog(ann.comment, initial, this);
+    Annotation preview = ann;
+    preview.commentStyle = initial;
+    preview.commentStyle.font = 0;
+    CommentDialog dialog(ann.comment, initial, commentFont(preview), this);
     dialog.adjustSize();
     // Center on the arrow's midpoint, then keep the frame inside the screen.
     const QPoint anchor = mapToGlobal(((QPointF(ann.a) + QPointF(ann.b)) * 0.5).toPoint());
