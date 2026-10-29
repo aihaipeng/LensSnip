@@ -128,6 +128,7 @@ int main(int argc, char **argv)
         const QString textAbove = QCoreApplication::translate("CaptureOverlay", "上方");
         const QString textBelow = QCoreApplication::translate("CaptureOverlay", "下方");
         const QString textColor = QCoreApplication::translate("CaptureOverlay", "文字颜色");
+        const QString textDistance = QCoreApplication::translate("CaptureOverlay", "距离");
         const bool hasEnglish = I18n::availableLocales().contains(QStringLiteral("en_US"));
         const bool ok = hasEnglish
                 && (english ? capture == QStringLiteral("Screenshot (F1)")
@@ -146,6 +147,7 @@ int main(int argc, char **argv)
                                    && insertText == QStringLiteral("Insert text")
                                     && textAbove == QStringLiteral("Above") && textBelow == QStringLiteral("Below")
                                     && textColor == QStringLiteral("Text color")
+                                    && textDistance == QStringLiteral("Distance")
                             : capture == QStringLiteral("截图 (F1)")
                                   && loading == QStringLiteral("正在识别…")
                                   && arrow == QStringLiteral("箭头 (A)")
@@ -161,7 +163,8 @@ int main(int argc, char **argv)
                                    && exportFolder == QStringLiteral("选择文件夹")
                                    && insertText == QStringLiteral("插入文本")
                                     && textAbove == QStringLiteral("上方") && textBelow == QStringLiteral("下方")
-                                    && textColor == QStringLiteral("文字颜色"));
+                                     && textColor == QStringLiteral("文字颜色")
+                                     && textDistance == QStringLiteral("距离"));
         std::printf("%s locale=%s locales=%s capture=[%s] loading=[%s] arrow=[%s] pinFail=[%s] pinPending=[%s] historyEmpty=[%s] preview=[%s] hidden=[%s] save=[%s] dropdown=[%s] adjust=[%s]\n",
                     ok ? "PASS" : "FAIL", qPrintable(locale),
                     qPrintable(I18n::availableLocales().join(QLatin1Char(','))),

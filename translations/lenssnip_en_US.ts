@@ -657,6 +657,14 @@
         <translation>Text color</translation>
     </message>
     <message>
+        <source>距离</source>
+        <translation>Distance</translation>
+    </message>
+    <message>
+        <source>颜色</source>
+        <translation>Color</translation>
+    </message>
+    <message>
         <source>关闭</source>
         <translation>Close</translation>
     </message>

@@ -73,6 +73,7 @@ public:
         QString family = QStringLiteral("Microsoft YaHei UI");
         qreal font = 0;                           // 0 = automatic size from the arrow width.
         int direction = 0;                        // 0 inline, 1 horizontal, 2 above, 3 below the upright shaft.
+        int distance = 4;                         // Gap from the text box to the shaft, in logical pixels.
         bool bold = false;
         bool italic = false;
         QColor color;                             // Invalid follows the arrow color.

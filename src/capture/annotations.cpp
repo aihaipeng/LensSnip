@@ -872,6 +872,7 @@ CaptureOverlay::CommentStyle CaptureOverlay::defaultCommentStyle()
     style.bold = settings.value(QStringLiteral("Capture/EmbedTextFontBold"), false).toBool();
     style.italic = settings.value(QStringLiteral("Capture/EmbedTextFontItalic"), false).toBool();
     style.color = QColor(settings.value(QStringLiteral("Capture/EmbedTextColor")).toString());
+    style.distance = qBound(0, settings.value(QStringLiteral("Capture/EmbedTextDistance"), 4).toInt(), 100);
     return style;
 }
 
@@ -886,6 +887,7 @@ void CaptureOverlay::saveCommentStyle(const CommentStyle &style)
     settings.setValue(QStringLiteral("Capture/EmbedTextFontItalic"), style.italic);
     settings.setValue(QStringLiteral("Capture/EmbedTextColor"),
                       style.color.isValid() ? style.color.name(QColor::HexArgb) : QString());
+    settings.setValue(QStringLiteral("Capture/EmbedTextDistance"), style.distance);
 }
 
 qreal CaptureOverlay::commentAngle(const Annotation &ann)
@@ -909,7 +911,7 @@ void CaptureOverlay::commentPaths(const Annotation &ann, QPainterPath &text, QPa
     const QPointF center = (QPointF(ann.a) + QPointF(ann.b)) * 0.5;
     box.moveCenter(center);
     if (ann.commentStyle.direction >= 2) {
-        const qreal offset = box.height() * 0.5 + qMax<qreal>(1.0, ann.pen) * 0.5 + 4.0;
+        const qreal offset = box.height() * 0.5 + qMax<qreal>(1.0, ann.pen) * 0.5 + ann.commentStyle.distance;
         box.translate(0, ann.commentStyle.direction == 2 ? -offset : offset);
     }
     text.addText(QPointF(box.left(), box.top() + metrics.ascent()), font, ann.comment);

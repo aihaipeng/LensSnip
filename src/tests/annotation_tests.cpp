@@ -44,6 +44,7 @@
 #include <QLabel>
 #include <QFontInfo>
 #include <QStyleOptionViewItem>
+#include <QStyleOptionSlider>
 #include <QTemporaryDir>
 #include <functional>
 #include <qt_windows.h>
@@ -959,7 +960,7 @@ int CaptureOverlay::testArrowComment(const QString &previewPath)
     check(plain.pixelColor(mid - cropOrigin) == arrow.color,
           "the uncut arrow paints its shaft at the midpoint");
     check(overlay.m_anns[0].commentStyle.direction == 0
-              && overlay.m_anns[0].commentStyle.font == 0,
+              && overlay.m_anns[0].commentStyle.font == 0 && overlay.m_anns[0].commentStyle.distance == 4,
           "new arrows start with inline text and the default style");
 
     auto openComment = [&](const QString &value, bool accept,
@@ -1016,27 +1017,47 @@ int CaptureOverlay::testArrowComment(const QString &previewPath)
         auto *group = dialog->findChild<QButtonGroup *>(QStringLiteral("commentDirection"));
         auto *fontLabel = dialog->findChild<QLabel *>(QStringLiteral("commentFontLabel"));
         auto *directionLabel = dialog->findChild<QLabel *>(QStringLiteral("commentDirectionLabel"));
+        auto *distance = dialog->findChild<QSlider *>(QStringLiteral("commentDistance"));
         check(surface && edit && font && size && bold && italic && color && !style && directions && group
-                  && fontLabel && directionLabel, "the card exposes all prototype controls");
+                  && fontLabel && directionLabel && distance, "the card exposes all prototype controls");
         const auto position = [surface](QWidget *widget) { return widget->mapTo(surface, QPoint()); };
         check(dialog->windowFlags().testFlag(Qt::FramelessWindowHint) && surface->width() == 500
                   && edit->placeholderText().isEmpty() && edit->height() == 48
                   && edit->width() == 458 && size->width() == 52 && size->height() == 32,
               "the custom card matches the 500px prototype and blank input");
         check(position(font).x() == position(directions).x()
-                  && position(color).x() + color->width() == position(edit).x() + edit->width()
-                  && position(color).x() == position(italic).x() + italic->width() + 8
+                  && position(italic).x() + italic->width() == position(edit).x() + edit->width()
+                  && position(color).x() == position(font).x()
+                  && position(color).y() == position(font).y() + font->height() + 16
+                  && position(directions).y() == position(color).y() + color->height() + 16
                   && position(directions).x() + directions->width() == position(edit).x() + edit->width()
                   && position(font).y() == position(italic).y()
                   && position(font).y() == position(size).y(),
-              "font and direction rows fill and align with the content edges");
+              "font, separate color and direction rows align with the content edges");
+        const int common[] = {0, 10, 3, 5, 6, 7};
+        QWidget *previous = color;
+        for (int i = 0; i < ColorBoard::CommonCount; ++i) {
+            auto *swatch = dialog->findChild<QToolButton *>(QStringLiteral("commentPreset%1").arg(i));
+            check(swatch && swatch->property("color").value<QColor>() == ColorBoard::preset(common[i])
+                      && position(swatch).y() == position(color).y()
+                      && position(swatch).x() == position(previous).x() + previous->width() + (i ? 8 : 12)
+                      && previous->nextInFocusChain() == swatch,
+                  "six standard black, white, red, yellow, green and blue chips follow the palette button");
+            previous = swatch;
+        }
+        check(!distance->isVisible()
+                  && distance->minimum() == 0 && distance->maximum() == 100 && distance->value() == 4,
+              "inline direction hides the distance row and preserves the original four-pixel gap");
         check(fontLabel->palette().color(QPalette::WindowText) == QColor(Qt::white)
                   && directionLabel->palette().color(QPalette::WindowText) == QColor(Qt::white)
                   && fontLabel->font().weight() >= QFont::DemiBold
                   && directionLabel->font().weight() >= QFont::DemiBold,
               "font and direction labels are white and semibold");
+        italic->setFocus(Qt::TabFocusReason);
+        QKeyEvent tab(QEvent::KeyPress, Qt::Key_Tab, Qt::NoModifier);
+        QApplication::sendEvent(italic, &tab);
         check(group->buttons().size() == 4 && color->accessibleName() == QStringLiteral("文字颜色")
-                  && italic->nextInFocusChain() == color,
+                   && color->hasFocus(),
               "four directions and the text color button retain accessible names and keyboard order");
         check(edit->font().pixelSize() == 16 && !edit->font().bold() && !edit->font().italic(),
               "the input is a fixed-size editor, not the formatting preview");
@@ -1203,6 +1224,144 @@ int CaptureOverlay::testArrowComment(const QString &previewPath)
         waiting.exec();
         timeout.stop();
     };
+    openComment(QString(), false, [&](QDialog *dialog) {
+        const int undoBefore = overlay.m_undoStack.size();
+        const QColor defaultBefore = defaultCommentStyle().color;
+        dialog->findChild<QLineEdit *>(QStringLiteral("commentText"))->setText(QStringLiteral("Color"));
+        auto *size = dialog->findChild<QComboBox *>(QStringLiteral("commentSize"));
+        size->setCurrentIndex(size->findData(20));
+        const int common[] = {0, 10, 3, 5, 6, 7};
+        for (int i = 0; i < ColorBoard::CommonCount; ++i) {
+            auto *swatch = dialog->findChild<QToolButton *>(QStringLiteral("commentPreset%1").arg(i));
+            const QPoint at = swatch->rect().center();
+            for (QEvent::Type type : {QEvent::MouseButtonPress, QEvent::MouseButtonRelease}) {
+                QMouseEvent event(type, at, swatch->mapToGlobal(at), Qt::LeftButton,
+                                  type == QEvent::MouseButtonPress ? Qt::LeftButton : Qt::NoButton, Qt::NoModifier);
+                QApplication::sendEvent(swatch, &event);
+            }
+            check(overlay.m_anns[0].commentStyle.color == ColorBoard::preset(common[i])
+                      && overlay.m_anns[0].color == arrow.color && swatch->isChecked(),
+                  "a real preset click immediately changes text color, not the shaft");
+            const QImage output = overlay.cropped().toImage();
+            bool colored = false;
+            QPainterPath glyphs, hole;
+            commentPaths(overlay.m_anns[0], glyphs, hole);
+            const QRect region = glyphs.boundingRect().toAlignedRect().translated(-cropOrigin).intersected(output.rect());
+            for (int y = region.top(); y <= region.bottom() && !colored; ++y)
+                for (int x = region.left(); x <= region.right(); ++x)
+                    if (output.pixelColor(x, y) == ColorBoard::preset(common[i])) { colored = true; break; }
+            check(colored,
+                  "preset text colors reach the output pixels");
+        }
+        const QColor preset = overlay.m_anns[0].commentStyle.color;
+        chooseTextColor(dialog, QColor("#123abc"), false);
+        check(overlay.m_anns[0].commentStyle.color == preset
+                  && dialog->findChild<QToolButton *>(QStringLiteral("commentPreset5"))->isChecked(),
+              "palette cancellation restores the selected shortcut color");
+        check(overlay.m_undoStack.size() == undoBefore && defaultCommentStyle().color == defaultBefore,
+              "preset preview does not commit undo or color defaults");
+    });
+    check(!overlay.m_anns[0].commentStyle.color.isValid() && overlay.cropped().toImage() == withComment,
+          "cancelling shortcut colors restores the original arrow and inherited text color");
+    openComment(QString(), false, [&](QDialog *dialog) {
+        auto *direction = dialog->findChild<QButtonGroup *>(QStringLiteral("commentDirection"));
+        auto *distance = dialog->findChild<QSlider *>(QStringLiteral("commentDistance"));
+        auto *controls = dialog->findChild<QWidget *>(QStringLiteral("commentDistanceControls"));
+        auto *cancel = dialog->findChild<QPushButton *>(QStringLiteral("commentCancel"));
+        auto *ok = dialog->findChild<QPushButton *>(QStringLiteral("commentConfirm"));
+        const int initialHeight = dialog->height();
+        const int undoBefore = overlay.m_undoStack.size();
+        const auto wheel = [&](int delta) {
+            const QPoint at = distance->rect().center();
+            QWheelEvent event(at, distance->mapToGlobal(at), {}, QPoint(0, delta),
+                              Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase, false);
+            QApplication::sendEvent(distance, &event);
+        };
+        for (int side = 2; side <= 3; ++side) {
+            direction->button(side)->click();
+            QApplication::processEvents();
+            check(distance->isVisible(), "side direction makes the distance slider visible");
+            check(controls->mapTo(dialog, QPoint()).x()
+                      == dialog->findChild<QLineEdit *>(QStringLiteral("commentText"))->mapTo(dialog, QPoint()).x(),
+                  "distance starts at the left content edge");
+            check(distance->mapTo(dialog, distance->rect().center()).y() == ok->mapTo(dialog, ok->rect().center()).y(),
+                  "distance and confirm share the same center line");
+            check(dialog->height() == initialHeight, "showing distance does not resize the card");
+            check(distance->isVisible() && controls->mapTo(dialog, QPoint()).x()
+                      == dialog->findChild<QLineEdit *>(QStringLiteral("commentText"))->mapTo(dialog, QPoint()).x()
+                      && distance->mapTo(dialog, distance->rect().center()).y()
+                          == ok->mapTo(dialog, ok->rect().center()).y()
+                      && ok->mapTo(dialog, QPoint()).y() == cancel->mapTo(dialog, QPoint()).y()
+                      && dialog->height() == initialHeight,
+                  "above and below show distance at bottom left on the unchanged action row");
+            distance->setValue(4);
+            const QImage closePixels = overlay.cropped().toImage();
+            QStyleOptionSlider option;
+            option.initFrom(distance);
+            option.orientation = Qt::Horizontal;
+            option.minimum = distance->minimum();
+            option.maximum = distance->maximum();
+            option.sliderPosition = option.sliderValue = distance->value();
+            option.singleStep = distance->singleStep();
+            option.pageStep = distance->pageStep();
+            const QRect handle = distance->style()->subControlRect(QStyle::CC_Slider, &option, QStyle::SC_SliderHandle, distance);
+            const QPoint start = handle.center();
+            const QPoint end = start + QPoint(50, 0);
+            QMouseEvent press(QEvent::MouseButtonPress, start, distance->mapToGlobal(start),
+                              Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+            QApplication::sendEvent(distance, &press);
+            QMouseEvent move(QEvent::MouseMove, end, distance->mapToGlobal(end),
+                             Qt::NoButton, Qt::LeftButton, Qt::NoModifier);
+            QApplication::sendEvent(distance, &move);
+            check(distance->isSliderDown() && distance->value() > 4
+                      && overlay.m_anns[0].commentStyle.distance == distance->value()
+                      && overlay.cropped().toImage() != closePixels,
+                  "dragging the actual slider handle previews side distance before release");
+            QMouseEvent release(QEvent::MouseButtonRelease, end, distance->mapToGlobal(end),
+                                Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+            QApplication::sendEvent(distance, &release);
+            const int dragged = distance->value();
+            wheel(120);
+            check(distance->value() > dragged && overlay.m_anns[0].commentStyle.distance == distance->value(),
+                  "wheel up moves the side text farther from the shaft");
+            wheel(-120);
+            check(distance->value() == dragged, "wheel down moves the side text back toward the shaft");
+            distance->setValue(0);
+            wheel(-120);
+            check(distance->value() == 0, "wheel distance is clamped at zero");
+            distance->setValue(100);
+            wheel(120);
+            check(distance->value() == 100, "wheel distance is clamped at one hundred");
+            distance->setValue(24);
+            QKeyEvent right(QEvent::KeyPress, Qt::Key_Right, Qt::NoModifier);
+            QApplication::sendEvent(distance, &right);
+            check(distance->value() == 25 && overlay.m_anns[0].commentStyle.distance == 25,
+                  "keyboard arrows adjust the side gap by one pixel");
+            distance->setValue(24);
+            if (!previewPath.isEmpty()) {
+                QApplication::processEvents();
+                dialog->findChild<QWidget *>(QStringLiteral("dialogSurface"))->grab()
+                    .save(previewPath + QStringLiteral(".distance-card%1.png").arg(side));
+                overlay.cropped().save(previewPath + QStringLiteral(".distance-arrow%1.png").arg(side));
+                const QRect visible = QRect(overlay.mapToGlobal(overlay.m_sel.topLeft()), overlay.m_sel.size())
+                                          .united(dialog->geometry()).intersected(dialog->screen()->geometry());
+                dialog->screen()->grabWindow(0, visible.x(), visible.y(), visible.width(), visible.height())
+                    .save(previewPath + QStringLiteral(".distance-live%1.png").arg(side));
+            }
+        }
+        for (int inlineDirection = 0; inlineDirection < 2; ++inlineDirection) {
+            direction->button(inlineDirection)->click();
+            check(!distance->isVisible() && distance->value() == 24
+                      && overlay.m_anns[0].commentStyle.distance == 24,
+                  "inline modes hide the distance control without discarding its value");
+        }
+        direction->button(2)->click();
+        check(distance->isVisible() && distance->value() == 24 && overlay.m_undoStack.size() == undoBefore
+                  && defaultCommentStyle().distance == 4,
+              "returning to a side keeps live distance without writing defaults or undo");
+    });
+    check(overlay.m_anns[0].commentStyle.distance == 4 && overlay.cropped().toImage() == withComment,
+          "cancelling side distance restores the original text position and pixels");
     openComment(QString(), false, [&](QDialog *dialog) {
         auto *edit = dialog->findChild<QLineEdit *>(QStringLiteral("commentText"));
         auto *font = dialog->findChild<QFontComboBox *>(QStringLiteral("commentFont"));
@@ -1488,6 +1647,23 @@ int CaptureOverlay::testArrowComment(const QString &previewPath)
         check(overlay.m_anns[0].commentStyle.direction == direction,
               "cancelling a direction change preserves the saved direction");
     }
+    const int undoBeforeDistance = overlay.m_undoStack.size();
+    openComment(overlay.m_anns[0].comment, true, [&](QDialog *dialog) {
+        auto *distance = dialog->findChild<QSlider *>(QStringLiteral("commentDistance"));
+        check(distance->isVisible(), "a saved side direction reopens with the distance control visible");
+        distance->setValue(31);
+    });
+    check(overlay.m_anns[0].commentStyle.distance == 31 && defaultCommentStyle().distance == 31
+              && overlay.m_undoStack.size() == undoBeforeDistance + 1,
+          "a distance-only edit is committed and persisted as exactly one undo step");
+    overlay.undoAnnotation();
+    check(overlay.m_anns[0].commentStyle.distance == 4, "undo restores the previous side gap");
+    overlay.redoAnnotation();
+    check(overlay.m_anns[0].commentStyle.distance == 31, "redo restores the committed side gap");
+    openComment(QString(), false, [&](QDialog *dialog) {
+        check(dialog->findChild<QSlider *>(QStringLiteral("commentDistance"))->value() == 31,
+              "re-editing restores the committed side gap");
+    });
     for (int direction = 0; direction < 4; ++direction) {
         for (const QPoint &delta : {QPoint(400, 0), QPoint(-400, -140), QPoint(0, 200), QPoint(320, -120)}) {
             Annotation positioned = arrow;
@@ -1508,7 +1684,30 @@ int CaptureOverlay::testArrowComment(const QString &previewPath)
             inlineArrow.commentStyle.direction = 0;
             check(direction == 1 ? qFuzzyIsNull(commentAngle(positioned))
                       : qFuzzyCompare(commentAngle(positioned) + 360, commentAngle(inlineArrow) + 360),
-                  "above and below remain parallel and upright for horizontal, reversed, vertical and diagonal arrows");
+                   "above and below remain parallel and upright for horizontal, reversed, vertical and diagonal arrows");
+            Annotation distant = positioned;
+            distant.commentStyle.distance = 24;
+            QPainterPath distantGlyphs, distantHole;
+            commentPaths(distant, distantGlyphs, distantHole);
+            QTransform turn;
+            turn.translate(mid.x(), mid.y());
+            turn.rotate(commentAngle(positioned));
+            turn.translate(-mid.x(), -mid.y());
+            const QPointF shift = turn.map(distantHole.boundingRect().center()) - turn.map(labelBox.center());
+            const qreal radians = qDegreesToRadians(commentAngle(positioned));
+            const qreal along = shift.x() * qCos(radians) + shift.y() * qSin(radians);
+            const qreal normal = -shift.x() * qSin(radians) + shift.y() * qCos(radians);
+            check(qAbs(along) < 0.01 && qAbs(normal - (direction == 2 ? -20 : direction == 3 ? 20 : 0)) < 0.01,
+                  "changing the gap moves side text along the upright shaft normal and leaves inline modes untouched");
+            for (int gap : {0, 4, 24, 100}) {
+                distant.commentStyle.distance = gap;
+                commentPaths(distant, distantGlyphs, distantHole);
+                const QRectF box = distantHole.boundingRect();
+                check(direction == 2 ? qAbs(mid.y() - shaftHalf - box.bottom() - gap) < 0.01
+                          : direction == 3 ? qAbs(box.top() - mid.y() - shaftHalf - gap) < 0.01
+                          : qAbs(box.center().y() - mid.y()) < 0.01,
+                      "the configured side gap is exact at zero, default, intermediate and maximum distances");
+            }
             QImage output(image.size(), QImage::Format_RGB32);
             output.fill(QColor(20, 30, 40));
             QPainter painter(&output);
@@ -1526,6 +1725,7 @@ int CaptureOverlay::testArrowComment(const QString &previewPath)
     saved.family = QStringLiteral("Arial");
     saved.font = 20;
     saved.direction = 3;
+    saved.distance = 37;
     saved.bold = true;
     saved.italic = true;
     saved.color = QColor(1, 2, 3, 128);
@@ -1533,7 +1733,7 @@ int CaptureOverlay::testArrowComment(const QString &previewPath)
     const CommentStyle loaded = defaultCommentStyle();
     check(loaded.family == saved.family && qFuzzyCompare(loaded.font + 1.0, saved.font + 1.0)
               && loaded.direction == saved.direction && loaded.bold == saved.bold
-              && loaded.italic == saved.italic && loaded.color == saved.color,
+              && loaded.italic == saved.italic && loaded.color == saved.color && loaded.distance == saved.distance,
           "comment style round-trips through the settings file");
     saveCommentStyle(CommentStyle{});                    // Keep later tests on the defaults.
     {
@@ -1545,6 +1745,12 @@ int CaptureOverlay::testArrowComment(const QString &previewPath)
         check(defaultCommentStyle().direction == 1, "legacy horizontal defaults remain compatible");
         settings.setValue(QStringLiteral("Capture/EmbedTextDirection"), 99);
         check(defaultCommentStyle().direction == 3, "invalid persisted directions are bounded");
+        settings.remove(QStringLiteral("Capture/EmbedTextDistance"));
+        check(defaultCommentStyle().distance == 4, "old settings keep the original four-pixel side gap");
+        settings.setValue(QStringLiteral("Capture/EmbedTextDistance"), -10);
+        check(defaultCommentStyle().distance == 0, "negative persisted gaps are bounded at zero");
+        settings.setValue(QStringLiteral("Capture/EmbedTextDistance"), 1000);
+        check(defaultCommentStyle().distance == 100, "oversized persisted gaps are bounded at one hundred");
         saveCommentStyle(CommentStyle{});
     }
 
@@ -1608,6 +1814,6 @@ int CaptureOverlay::testArrowComment(const QString &previewPath)
         overlay.update();
         overlay.cropped().toImage().save(previewPath + QStringLiteral(".diagonal.png"));
     }
-    std::puts("PASS: live arrow text, font, size, B/I, directions, text palette, cancel, undo and output");
+    std::puts("PASS: live arrow text, six colors, side distance drag/wheel, directions, cancel, undo and output");
     return 0;
 }

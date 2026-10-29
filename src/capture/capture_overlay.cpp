@@ -3621,11 +3621,37 @@ CommentDialog::CommentDialog(const QString &text, const CaptureOverlay::CommentS
     format->setSpacing(8);
     format->addWidget(m_bold);
     format->addWidget(m_italic);
-    auto *color = colorButton(m_style.color.isValid() ? m_style.color : arrowColor, tr("文字颜色"));
-    color->setObjectName(QStringLiteral("commentColor"));
-    format->addWidget(color);
     fontRow->addLayout(format);
     root->addLayout(fontRow);
+    root->addSpacing(16);
+
+    auto *colorRow = new QHBoxLayout;
+    colorRow->setSpacing(12);
+    auto *colorLabel = new QLabel(tr("颜色"));
+    colorLabel->setProperty("commentLabel", true);
+    colorRow->addWidget(colorLabel);
+    auto *color = colorButton(m_style.color.isValid() ? m_style.color : arrowColor, tr("文字颜色"));
+    color->setObjectName(QStringLiteral("commentColor"));
+    colorLabel->setBuddy(color);
+    colorRow->addWidget(color);
+    auto *presets = new QButtonGroup(this);
+    presets->setExclusive(false);
+    auto *presetRow = new QHBoxLayout;
+    presetRow->setSpacing(8);
+    const int common[] = {0, 10, 3, 5, 6, 7};
+    for (int i = 0; i < ColorBoard::CommonCount; ++i) {
+        const QColor value = ColorBoard::preset(common[i]);
+        auto *swatch = colorButton(value, value.name());
+        swatch->setObjectName(QStringLiteral("commentPreset%1").arg(i));
+        swatch->setProperty("color", value);
+        swatch->setCheckable(true);
+        swatch->setChecked(value == (m_style.color.isValid() ? m_style.color : arrowColor));
+        presets->addButton(swatch, i);
+        presetRow->addWidget(swatch);
+    }
+    colorRow->addLayout(presetRow);
+    colorRow->addStretch();
+    root->addLayout(colorRow);
     root->addSpacing(16);
 
     auto *directionRow = new QHBoxLayout;
@@ -3633,8 +3659,9 @@ CommentDialog::CommentDialog(const QString &text, const CaptureOverlay::CommentS
     auto *directionLabel = new QLabel(tr("方向"));
     directionLabel->setObjectName(QStringLiteral("commentDirectionLabel"));
     directionLabel->setProperty("commentLabel", true);
-    const int labelWidth = qMax(28, qMax(fontLabel->sizeHint().width(), directionLabel->sizeHint().width()));
+    const int labelWidth = std::max({28, fontLabel->sizeHint().width(), colorLabel->sizeHint().width(), directionLabel->sizeHint().width()});
     fontLabel->setFixedWidth(labelWidth);
+    colorLabel->setFixedWidth(labelWidth);
     directionLabel->setFixedWidth(labelWidth);
     directionRow->addWidget(directionLabel);
     auto *segments = new QFrame;
@@ -3664,6 +3691,37 @@ CommentDialog::CommentDialog(const QString &text, const CaptureOverlay::CommentS
 
     auto *actions = new QHBoxLayout;
     actions->setSpacing(8);
+    auto *distanceControls = new QWidget;
+    distanceControls->setObjectName(QStringLiteral("commentDistanceControls"));
+    auto *distanceRow = new QHBoxLayout(distanceControls);
+    distanceRow->setContentsMargins(0, 0, 0, 0);
+    distanceRow->setSpacing(8);
+    auto *distanceLabel = new QLabel(tr("距离"));
+    auto *distance = new QSlider(Qt::Horizontal);
+    distance->setObjectName(QStringLiteral("commentDistance"));
+    distance->setRange(0, 100);
+    distance->setSingleStep(1);
+    distance->setPageStep(10);
+    distance->setValue(m_style.distance);
+    distance->setFixedHeight(32);
+    distance->setMinimumWidth(80);
+    distance->setAccessibleName(tr("距离"));
+    distance->setStyleSheet(darkSliderQss + QStringLiteral(
+        "QSlider::sub-page:horizontal{background:#9c9da1;}"
+        "QSlider[kbdFocus=\"true\"]{border:2px solid #c5c7ce;border-radius:6px;}"));
+    distanceLabel->setBuddy(distance);
+    auto *distanceValue = new QLabel(QStringLiteral("%1 px").arg(m_style.distance));
+    distanceValue->setFixedWidth(distanceValue->fontMetrics().horizontalAdvance(QStringLiteral("100 px")));
+    distanceValue->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    distanceRow->addWidget(distanceLabel);
+    distanceRow->addWidget(distance, 1);
+    distanceRow->addWidget(distanceValue);
+    distanceControls->setFixedSize(254, 32);
+    QSizePolicy distancePolicy = distanceControls->sizePolicy();
+    distancePolicy.setRetainSizeWhenHidden(true);
+    distanceControls->setSizePolicy(distancePolicy);
+    distanceControls->setVisible(m_style.direction >= 2);
+    actions->addWidget(distanceControls);
     actions->addStretch();
     auto *ok = new QPushButton(tr("确定"));
     auto *cancel = new QPushButton(tr("取消"));
@@ -3686,8 +3744,14 @@ CommentDialog::CommentDialog(const QString &text, const CaptureOverlay::CommentS
         m_text = value;
         updatePreview();
     });
-    connect(m_direction, &QButtonGroup::idClicked, this, [this, updatePreview](int index) {
+    connect(m_direction, &QButtonGroup::idClicked, this, [this, distanceControls, updatePreview](int index) {
         m_style.direction = index;
+        distanceControls->setVisible(index >= 2);
+        updatePreview();
+    });
+    connect(distance, &QSlider::valueChanged, this, [this, distanceValue, updatePreview](int value) {
+        m_style.distance = value;
+        distanceValue->setText(QStringLiteral("%1 px").arg(value));
         updatePreview();
     });
     connect(m_font, &QFontComboBox::currentFontChanged, this, [this, updatePreview](const QFont &font) {
@@ -3706,26 +3770,32 @@ CommentDialog::CommentDialog(const QString &text, const CaptureOverlay::CommentS
         m_style.italic = on;
         updatePreview();
     });
-    connect(color, &QToolButton::clicked, this, [this, color, arrowColor, frames, updatePreview] {
+    const auto previewColor = [this, color, presets, arrowColor, updatePreview](const QColor &value) {
+        m_style.color = value;
+        const qreal dpr = color->devicePixelRatioF();
+        QPixmap chip(qCeil(24 * dpr), qCeil(24 * dpr));
+        chip.setDevicePixelRatio(dpr);
+        QPainter painter(&chip);
+        for (int y = 0; y < 24; y += 4)
+            for (int x = 0; x < 24; x += 4)
+                painter.fillRect(x, y, 4, 4, (x / 4 + y / 4) % 2 ? QColor("#979aa3") : QColor("#d7d8dc"));
+        const QColor effective = value.isValid() ? value : arrowColor;
+        painter.fillRect(QRect(0, 0, 24, 24), effective);
+        painter.end();
+        color->setIcon(QIcon(chip));
+        color->setIconSize(QSize(24, 24));
+        for (auto *swatch : presets->buttons())
+            swatch->setChecked(swatch->property("color").value<QColor>() == effective);
+        updatePreview();
+    };
+    connect(presets, &QButtonGroup::buttonClicked, this, [previewColor](QAbstractButton *swatch) {
+        previewColor(swatch->property("color").value<QColor>());
+    });
+    connect(color, &QToolButton::clicked, this, [this, color, arrowColor, frames, updatePreview, previewColor] {
         const QColor previous = m_style.color;
         auto *palette = new ColorDialog(previous.isValid() ? previous : arrowColor, this);
         palette->setAttribute(Qt::WA_DeleteOnClose);
         palette->setWindowTitle(QCoreApplication::translate("CaptureOverlay", "文字颜色"));
-        const auto previewColor = [this, color, arrowColor, updatePreview](const QColor &value) {
-            m_style.color = value;
-            const qreal dpr = color->devicePixelRatioF();
-            QPixmap chip(qCeil(24 * dpr), qCeil(24 * dpr));
-            chip.setDevicePixelRatio(dpr);
-            QPainter painter(&chip);
-            for (int y = 0; y < 24; y += 4)
-                for (int x = 0; x < 24; x += 4)
-                    painter.fillRect(x, y, 4, 4, (x / 4 + y / 4) % 2 ? QColor("#979aa3") : QColor("#d7d8dc"));
-            painter.fillRect(QRect(0, 0, 24, 24), value.isValid() ? value : arrowColor);
-            painter.end();
-            color->setIcon(QIcon(chip));
-            color->setIconSize(QSize(24, 24));
-            updatePreview();
-        };
         connect(palette, &QColorDialog::currentColorChanged, this, previewColor);
         connect(palette, &ColorDialog::screenPickRequested, palette, [palette, frames] {
             QPointer<ColorDialog> guard(palette);
@@ -3760,7 +3830,9 @@ CommentDialog::CommentDialog(const QString &text, const CaptureOverlay::CommentS
         control->installEventFilter(this);
     }
     QList<QWidget *> tabOrder{m_edit, m_font, m_size, m_bold, m_italic, color};
+    for (int i = 0; i < ColorBoard::CommonCount; ++i) tabOrder.append(presets->button(i));
     for (int i = 0; i < 4; ++i) tabOrder.append(m_direction->button(i));
+    tabOrder.append(distance);
     tabOrder.append(cancel);
     tabOrder.append(ok);
     tabOrder.append(close);
@@ -3855,7 +3927,8 @@ void CaptureOverlay::editArrowComment(int index)
     saveCommentStyle(style);
     const auto same = [](const CommentStyle &a, const CommentStyle &b) {
         return a.family == b.family && qFuzzyCompare(a.font + 1.0, b.font + 1.0)
-            && a.direction == b.direction && a.bold == b.bold && a.italic == b.italic && a.color == b.color;
+            && a.direction == b.direction && a.distance == b.distance
+            && a.bold == b.bold && a.italic == b.italic && a.color == b.color;
     };
     if (text == ann.comment && same(style, ann.commentStyle)) return;
     pushUndo();
