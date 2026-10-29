@@ -649,6 +649,42 @@
         <translation>Cancel</translation>
     </message>
     <message>
+        <source>插入文本</source>
+        <translation>Insert text</translation>
+    </message>
+    <message>
+        <source>关闭</source>
+        <translation>Close</translation>
+    </message>
+    <message>
+        <source>确定</source>
+        <translation>OK</translation>
+    </message>
+    <message>
+        <source>方向</source>
+        <translation>Direction</translation>
+    </message>
+    <message>
+        <source>跟随</source>
+        <translation>Follow</translation>
+    </message>
+    <message>
+        <source>水平</source>
+        <translation>Horizontal</translation>
+    </message>
+    <message>
+        <source>上方</source>
+        <translation>Above</translation>
+    </message>
+    <message>
+        <source>下方</source>
+        <translation>Below</translation>
+    </message>
+    <message>
+        <source>字体大小</source>
+        <translation>Font size</translation>
+    </message>
+    <message>
         <location line="+131"/>
         <source>刷新失败，请重试</source>
         <translation>Refresh failed. Try again.</translation>
@@ -950,6 +986,10 @@ Pin, scrolling capture, and OCR are available from the capture toolbar.</transla
     <message>
         <source>截图时自动添加水印</source>
         <translation>Automatically add watermark when taking screenshot</translation>
+    </message>
+    <message>
+        <source>双击箭头不出现评论</source>
+        <translation>Do not open a comment when double-clicking an arrow</translation>
     </message>
 </context>
 <context>

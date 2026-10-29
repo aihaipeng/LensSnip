@@ -25,6 +25,7 @@ class OcrDialog;
 #include <QPaintEvent>
 #include <QWidget>
 #include <QPainter>
+#include <QPainterPath>
 #include <QMouseEvent>
 #include <QWheelEvent>
 #include <QKeyEvent>
@@ -67,6 +68,14 @@ public:
     // Instant annotation tools, shared with callers that reopen existing
     // pixels (pin edit) in this overlay.
     enum class ATool { None, Rect, Ellipse, Arrow, Pen, Marker, Text, Number, Mosaic, Eraser, Watermark };
+    // Arrow comment style, persisted per arrow and reused as the next dialog default.
+    struct CommentStyle {
+        QString family = QStringLiteral("Microsoft YaHei UI");
+        qreal font = 0;                           // 0 = automatic size from the arrow width.
+        int direction = 0;                        // 0 inline, 1 horizontal, 2 above, 3 below the upright shaft.
+        bool bold = false;
+        bool italic = false;
+    };
     // Embedded mode: the same annotation engine as a child canvas inside a pin
     // window. The pin toolbar arms tools; the option strip detaches as a small
     // top-level bar the pin positions below its own toolbar.
@@ -96,6 +105,7 @@ public:
     static int testAutoMosaic(const QString &previewPath);
     static int testWindowDetection();
     static int testTextAnnotation();
+    static int testArrowComment(const QString &previewPath = QString());
     static int testWatermark(const QString &previewPath = QString());
     static int testOutput();
 signals:
@@ -155,7 +165,10 @@ private:
         QRect rect;                                  // Rect / Ellipse / Mosaic / Text / Number box.
         QPoint a, b;                                 // Arrow / straight highlighter endpoints.
         QPolygonF stroke;                            // Pen / brush polyline.
+        // Arrow comment style, persisted per arrow and reused as the next dialog default.
         QString text;                                // Text / Number content.
+        QString comment;                             // Arrow double-click comment, cut into the shaft.
+        CommentStyle commentStyle;                   // Style captured with the comment.
         qreal font = 15;                             // Text / Number point size (1/72 inch).
         QString family = QStringLiteral("Microsoft YaHei UI");
         int arrowStyle = 0;                          // 0 straight, 1 straight bilateral, 2 line, 3 line bilateral,
@@ -188,6 +201,13 @@ private:
     static bool textInnerHit(const Annotation &ann, const QPoint &pos);
     int annotationAt(const QPoint &pos) const;
     int textAnnotationAt(const QPoint &pos) const;
+    int arrowAnnotationAt(const QPoint &pos) const;
+    void editArrowComment(int index);
+    static CommentStyle defaultCommentStyle();
+    static void saveCommentStyle(const CommentStyle &style);
+    static QFont commentFont(const Annotation &ann);
+    static qreal commentAngle(const Annotation &ann);
+    static void commentPaths(const Annotation &ann, QPainterPath &text, QPainterPath &background);
     // Area anchors follow the shape contour; lines have endpoints and freehand strokes have none.
     QVector<QPoint> annAnchors(const Annotation &ann) const;
     Handle annHandleAt(const Annotation &ann, const QPoint &pos) const;

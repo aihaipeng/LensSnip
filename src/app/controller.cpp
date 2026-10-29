@@ -123,6 +123,13 @@ Controller::Controller()
     connect(autoWatermark, &QAction::toggled, this, [](bool enabled) {
         LensSnipSettings().setValue(QStringLiteral("Watermark/AutoAdd"), enabled);
     });
+    QAction *arrowComment = annotation->addAction(tr("双击箭头不出现评论"));
+    arrowComment->setCheckable(true);
+    arrowComment->setChecked(LensSnipSettings().value(
+        QStringLiteral("Capture/DisableArrowDoubleClickComment"), false).toBool());
+    connect(arrowComment, &QAction::toggled, this, [](bool enabled) {
+        LensSnipSettings().setValue(QStringLiteral("Capture/DisableArrowDoubleClickComment"), enabled);
+    });
     QMenu *language = m->addMenu(tr("语言"));
     QActionGroup *languageGroup = new QActionGroup(language);
     languageGroup->setExclusive(true);

@@ -1,6 +1,7 @@
 #include "capture/capture_overlay.h"
 #include <QAbstractItemView>
 #include "platform/output.h"
+#include "shared/settings.h"
 #include "tests/test_support.h"
 #include "shared/widgets.h"
 #include "pin/pin_window.h"
@@ -26,6 +27,9 @@
 #include <QKeyEvent>
 #include <QTextCursor>
 #include <QInputMethodEvent>
+#include <QDialog>
+#include <QPushButton>
+#include <QTimer>
 #include <QtMath>
 #include <QToolButton>
 #include <QComboBox>
@@ -33,8 +37,13 @@
 #include <QBoxLayout>
 #include <QDoubleValidator>
 #include <QLineEdit>
+#include <QFontComboBox>
+#include <QButtonGroup>
+#include <QFocusEvent>
+#include <QLabel>
 #include <QFontInfo>
 #include <QTemporaryDir>
+#include <functional>
 #include <qt_windows.h>
 #include <array>
 #include <cstdio>
@@ -914,5 +923,437 @@ int CaptureOverlay::testTextAnnotation()
           "capture actions commit the live text and output it exactly once");
     check(pinnedRegion == expectedRegion, "pinning preserves the annotated selection's original global geometry");
     std::puts("PASS: native text input, multiline layout, live formatting, re-editing, rotation, undo, and output");
+    return 0;
+}
+
+int CaptureOverlay::testArrowComment(const QString &previewPath)
+{
+    auto check = [](bool ok, const char *message) {
+        if (!ok) { std::fprintf(stderr, "FAIL: %s\n", message); std::exit(1); }
+    };
+    const QRect screen = QGuiApplication::primaryScreen()->geometry();
+    QImage image(720, 320, QImage::Format_RGB32);
+    image.fill(QColor(20, 30, 40));
+    CaptureOverlay overlay({ScreenFrame{QRect(screen.topLeft(), QSize(720, 320)),
+                                        QRect(0, 0, 720, 320), image}});
+    overlay.setAttribute(Qt::WA_DeleteOnClose, false);
+    const QPoint origin = overlay.mapFromGlobal(screen.topLeft());
+    overlay.m_mode = Adjusting;
+    overlay.m_sel = QRect(origin, QSize(720, 320));
+    overlay.placeToolBars();
+    overlay.showToolBars();
+    overlay.selectTool(ATool::None);
+    Annotation arrow;
+    arrow.tool = ATool::Arrow;
+    arrow.color = QColor(255, 0, 0);
+    arrow.pen = 10;
+    arrow.a = origin + QPoint(80, 160);
+    arrow.b = origin + QPoint(640, 160);
+    overlay.m_anns = {arrow};
+    overlay.m_selAnn = -1;
+    const QPoint cropOrigin = overlay.m_sel.topLeft();
+    const QPoint mid = origin + QPoint(360, 160);
+    const QImage plain = overlay.cropped().toImage();
+    check(plain.pixelColor(mid - cropOrigin) == arrow.color,
+          "the uncut arrow paints its shaft at the midpoint");
+    check(overlay.m_anns[0].commentStyle.direction == 0
+              && overlay.m_anns[0].commentStyle.font == 0,
+          "new arrows start with inline text and the default style");
+
+    auto openComment = [&](const QString &value, bool accept,
+                           const std::function<void(QDialog *)> &inspect = {}) {
+        QTimer poll;
+        poll.setInterval(10);
+        QTimer timeout;
+        timeout.setSingleShot(true);
+        QObject::connect(&timeout, &QTimer::timeout, [&] { check(false, "insert-text dialog did not appear"); });
+        QObject::connect(&poll, &QTimer::timeout, [&] {
+            for (QWidget *w : QApplication::topLevelWidgets()) {
+                auto *dialog = qobject_cast<QDialog *>(w);
+                if (!dialog || !dialog->isVisible()
+                    || dialog->windowTitle() != QStringLiteral("插入文本")) continue;
+                if (inspect) inspect(dialog);
+                if (accept) {
+                    if (auto *edit = dialog->findChild<QLineEdit *>(QStringLiteral("commentText")))
+                        edit->setText(value);
+                    for (auto *button : dialog->findChildren<QPushButton *>())
+                        if (button->text() == QStringLiteral("确定")) {
+                            poll.stop();
+                            button->click();
+                            return;
+                        }
+                }
+                poll.stop();
+                dialog->reject();
+                return;
+            }
+        });
+        timeout.start(5000);
+        poll.start();
+        QMouseEvent event(QEvent::MouseButtonDblClick, mid, overlay.mapToGlobal(mid),
+                          Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+        QApplication::sendEvent(&overlay, &event);
+        poll.stop();
+        timeout.stop();
+        QApplication::processEvents();
+    };
+
+    bool sawEmpty = false;
+    openComment(QStringLiteral("I"), true, [&](QDialog *dialog) {
+        auto *edit = dialog->findChild<QLineEdit *>(QStringLiteral("commentText"));
+        sawEmpty = edit && edit->text().isEmpty();
+        auto *surface = dialog->findChild<QWidget *>(QStringLiteral("dialogSurface"));
+        auto *font = dialog->findChild<QFontComboBox *>(QStringLiteral("commentFont"));
+        auto *size = dialog->findChild<QComboBox *>(QStringLiteral("commentSize"));
+        auto *bold = dialog->findChild<QToolButton *>(QStringLiteral("commentBold"));
+        auto *italic = dialog->findChild<QToolButton *>(QStringLiteral("commentItalic"));
+        auto *style = dialog->findChild<QToolButton *>(QStringLiteral("commentStyle"));
+        auto *directions = dialog->findChild<QWidget *>(QStringLiteral("commentDirections"));
+        auto *group = dialog->findChild<QButtonGroup *>(QStringLiteral("commentDirection"));
+        auto *fontLabel = dialog->findChild<QLabel *>(QStringLiteral("commentFontLabel"));
+        auto *directionLabel = dialog->findChild<QLabel *>(QStringLiteral("commentDirectionLabel"));
+        check(surface && edit && font && size && bold && italic && !style && directions && group
+                  && fontLabel && directionLabel, "the card exposes all prototype controls");
+        const auto position = [surface](QWidget *widget) { return widget->mapTo(surface, QPoint()); };
+        check(dialog->windowFlags().testFlag(Qt::FramelessWindowHint) && surface->width() == 500
+                  && edit->placeholderText().isEmpty() && edit->height() == 48
+                  && edit->width() == 458 && size->width() == 52 && size->height() == 32,
+              "the custom card matches the 500px prototype and blank input");
+        check(position(font).x() == position(directions).x()
+                  && position(italic).x() + italic->width() == position(edit).x() + edit->width()
+                  && position(directions).x() + directions->width() == position(edit).x() + edit->width()
+                  && position(font).y() == position(italic).y()
+                  && position(font).y() == position(size).y(),
+              "font and direction rows fill and align with the content edges");
+        check(fontLabel->palette().color(QPalette::WindowText) == QColor(Qt::white)
+                  && directionLabel->palette().color(QPalette::WindowText) == QColor(Qt::white)
+                  && fontLabel->font().weight() >= QFont::DemiBold
+                  && directionLabel->font().weight() >= QFont::DemiBold,
+              "font and direction labels are white and semibold");
+        check(group->buttons().size() == 4
+                  && !dialog->findChild<QWidget *>(QStringLiteral("commentTextColor")),
+              "four directions remain and text-style controls are removed");
+        for (auto *button : group->buttons())
+            check(qAbs(button->width() - group->button(0)->width()) <= 1,
+                  "direction segments are equal width");
+        QFocusEvent keyboardFocus(QEvent::FocusIn, Qt::TabFocusReason);
+        QApplication::sendEvent(bold, &keyboardFocus);
+        check(bold->property("kbdFocus").toBool(), "keyboard focus keeps a neutral focus indicator");
+        const QImage focusPixels = bold->grab().toImage();
+        const QColor focusEdge = focusPixels.pixelColor(focusPixels.width() / 2,
+                                                       qRound(focusPixels.devicePixelRatio()));
+        check(qAbs(focusEdge.red() - 197) < 20 && qAbs(focusEdge.green() - 199) < 20
+                  && qAbs(focusEdge.blue() - 206) < 20,
+              "keyboard focus paints the neutral gray outline");
+        check(bold->nextInFocusChain() == italic, "the keyboard focus chain follows the font-row order");
+        QMouseEvent press(QEvent::MouseButtonPress, QPointF(16, 16), bold->mapToGlobal(QPoint(16, 16)),
+                          Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+        QApplication::sendEvent(bold, &press);
+        check(!bold->property("kbdFocus").toBool(), "pointer clicks remove the focus indicator");
+        bold->setDown(false);
+        const QImage buttonPixels = bold->grab().toImage();
+        for (int y = 0; y < buttonPixels.height(); ++y)
+            for (int x = 0; x < buttonPixels.width(); ++x) {
+                const QColor color = buttonPixels.pixelColor(x, y);
+                check(color.blue() - color.red() < 40, "button clicks do not paint a colored halo");
+            }
+        if (!previewPath.isEmpty()) {
+            surface->grab().save(previewPath + QStringLiteral(".card.png"));
+            size->setCurrentIndex(size->findData(40));
+            surface->grab().save(previewPath + QStringLiteral(".card-size40.png"));
+            size->setCurrentIndex(0);
+        }
+        const QImage sizeImage = size->grab().toImage();
+        int inkLeft = sizeImage.width(), inkRight = -1;
+        for (int y = qRound(6 * sizeImage.devicePixelRatio()); y < sizeImage.height() - qRound(6 * sizeImage.devicePixelRatio()); ++y)
+            for (int x = qRound(4 * sizeImage.devicePixelRatio()); x < sizeImage.width() - qRound(4 * sizeImage.devicePixelRatio()); ++x) {
+                const QColor color = sizeImage.pixelColor(x, y);
+                if (color.red() > 170 && color.green() > 170 && color.blue() > 170) {
+                    inkLeft = qMin(inkLeft, x);
+                    inkRight = qMax(inkRight, x);
+                }
+            }
+        check(inkRight >= inkLeft && qAbs((inkLeft + inkRight) * 0.5 - sizeImage.width() * 0.5)
+                  <= 3 * sizeImage.devicePixelRatio(), "the closed size value is horizontally centered");
+        edit->setFocus(Qt::OtherFocusReason);
+    });
+    check(sawEmpty && overlay.m_anns.size() == 1
+              && overlay.m_anns[0].comment == QStringLiteral("I") && overlay.m_undoStack.size() == 1,
+          "double-click opens an empty comment dialog and commits one undo step");
+    const QImage withComment = overlay.cropped().toImage();
+    QPainterPath textPath, holePath;
+    commentPaths(overlay.m_anns[0], textPath, holePath);
+    check(!textPath.isEmpty() && !holePath.isEmpty(), "the comment builds glyph and cutout paths");
+    const QRectF holeBox = holePath.boundingRect();
+    const QRectF glyphBox = textPath.boundingRect();
+    const QPoint hole(qRound(qMin(holeBox.right() - 2.0, glyphBox.right() + 2.0)) - cropOrigin.x(),
+                      qRound(holeBox.center().y()) - cropOrigin.y());
+    check(plain.pixelColor(hole) == arrow.color && withComment.pixelColor(hole) == QColor(20, 30, 40),
+          "the comment cuts the arrow shaft down to the captured pixels");
+    int white = 0;
+    const QRect scan = QRect(mid - QPoint(30, 20) - cropOrigin, QSize(60, 40)).intersected(withComment.rect());
+    for (int y = scan.top(); y <= scan.bottom(); ++y)
+        for (int x = scan.left(); x <= scan.right(); ++x) {
+            const QColor c = withComment.pixelColor(x, y);
+            if (c.red() > 200 && c.green() > 200 && c.blue() > 200) ++white;
+        }
+    check(white == 0, "inserted text has no white outline");
+
+    QPoint stroke;
+    for (int y = qCeil(glyphBox.top()); y <= qFloor(glyphBox.bottom()) && stroke.isNull(); ++y)
+        for (int x = qCeil(glyphBox.left()); x <= qFloor(glyphBox.right()); ++x)
+            if (textPath.contains(QPointF(x, y))) {
+                stroke = QPoint(x, y) - cropOrigin;
+                break;
+            }
+    check(!stroke.isNull(), "the glyph path has a fillable interior");
+    check(withComment.pixelColor(stroke).red() > 200 && withComment.pixelColor(stroke).green() < 80,
+          "inserted text is filled with the arrow color");
+
+    bool sawExisting = false, controlsOk = false;
+    openComment(QString(), false, [&](QDialog *dialog) {
+        auto *edit = dialog->findChild<QLineEdit *>(QStringLiteral("commentText"));
+        auto *direction = dialog->findChild<QButtonGroup *>(QStringLiteral("commentDirection"));
+        auto *size = dialog->findChild<QComboBox *>(QStringLiteral("commentSize"));
+        auto *font = dialog->findChild<QFontComboBox *>(QStringLiteral("commentFont"));
+        auto *bold = dialog->findChild<QToolButton *>(QStringLiteral("commentBold"));
+        auto *italic = dialog->findChild<QToolButton *>(QStringLiteral("commentItalic"));
+        sawExisting = edit && edit->text() == QStringLiteral("I");
+        controlsOk = direction && direction->checkedId() == 0
+            && size && size->currentData().toInt() == 0
+            && font && font->currentFont().family() == overlay.m_anns[0].commentStyle.family
+            && bold && !bold->isChecked() && italic && !italic->isChecked();
+        if (direction) direction->button(1)->click();
+    });
+    check(sawExisting && controlsOk && overlay.m_anns[0].comment == QStringLiteral("I")
+              && overlay.m_undoStack.size() == 1,
+          "double-click reopens text, direction, font, size and B/I; cancel keeps it");
+    {
+        QTimer keys;
+        keys.setInterval(10);
+        QTimer keyTimeout;
+        keyTimeout.setSingleShot(true);
+        QObject::connect(&keyTimeout, &QTimer::timeout, [&] { check(false, "keyboard edit did not finish"); });
+        keyTimeout.start(5000);
+        bool sawKeys = false;
+        QObject::connect(&keys, &QTimer::timeout, [&] {
+            for (QWidget *widget : QApplication::topLevelWidgets()) {
+                auto *dialog = qobject_cast<QDialog *>(widget);
+                if (!dialog || !dialog->isVisible() || dialog->windowTitle() != QStringLiteral("插入文本")) continue;
+                keys.stop();
+                auto *edit = dialog->findChild<QLineEdit *>(QStringLiteral("commentText"));
+                check(edit && edit->selectedText() == QStringLiteral("I"), "reopening selects the existing text");
+                edit->setText(QStringLiteral("Cancelled"));
+                QKeyEvent escape(QEvent::KeyPress, Qt::Key_Escape, Qt::NoModifier);
+                QApplication::sendEvent(edit, &escape);
+                sawKeys = true;
+                return;
+            }
+        });
+        keys.start();
+        overlay.editArrowComment(0);
+        check(sawKeys && overlay.m_anns[0].comment == QStringLiteral("I"), "Escape cancels text changes");
+        keys.disconnect();
+        QObject::connect(&keys, &QTimer::timeout, [&] {
+            for (QWidget *widget : QApplication::topLevelWidgets()) {
+                auto *dialog = qobject_cast<QDialog *>(widget);
+                if (!dialog || !dialog->isVisible() || dialog->windowTitle() != QStringLiteral("插入文本")) continue;
+                keys.stop();
+                auto *edit = dialog->findChild<QLineEdit *>(QStringLiteral("commentText"));
+                edit->setText(QStringLiteral("I"));
+                QKeyEvent enter(QEvent::KeyPress, Qt::Key_Return, Qt::NoModifier);
+                QApplication::sendEvent(edit, &enter);
+                return;
+            }
+        });
+        keys.start();
+        overlay.editArrowComment(0);
+        check(overlay.m_undoStack.size() == 1, "Enter accepts unchanged text without another undo step");
+        keyTimeout.stop();
+    }
+
+    const int undoBeforeStyle = overlay.m_undoStack.size();
+    openComment(QStringLiteral("Styled"), true, [&](QDialog *dialog) {
+        auto *direction = dialog->findChild<QButtonGroup *>(QStringLiteral("commentDirection"));
+        auto *size = dialog->findChild<QComboBox *>(QStringLiteral("commentSize"));
+        auto *font = dialog->findChild<QFontComboBox *>(QStringLiteral("commentFont"));
+        if (direction) direction->button(1)->click();
+        if (size) size->setCurrentIndex(size->findData(20));
+        if (font) font->setCurrentFont(QFont(QStringLiteral("Arial")));
+        if (auto *bold = dialog->findChild<QToolButton *>(QStringLiteral("commentBold"))) bold->click();
+        if (auto *italic = dialog->findChild<QToolButton *>(QStringLiteral("commentItalic"))) italic->click();
+    });
+    const CommentStyle styled = overlay.m_anns[0].commentStyle;
+    check(overlay.m_anns[0].comment == QStringLiteral("Styled")
+              && styled.direction == 1 && qRound(styled.font) == 20 && styled.bold && styled.italic
+              && styled.family == QStringLiteral("Arial")
+              && overlay.m_undoStack.size() == undoBeforeStyle + 1,
+          "confirming applies direction, font, size and B/I in one undo step");
+
+    CommentStyle &flat = overlay.m_anns[0].commentStyle;
+    flat.direction = 1;
+    check(qFuzzyIsNull(commentAngle(overlay.m_anns[0])), "flat comments keep a zero angle");
+    flat.direction = 0;
+    overlay.m_anns[0].a = origin + QPoint(600, 260);
+    overlay.m_anns[0].b = origin + QPoint(120, 60);
+    check(commentAngle(overlay.m_anns[0]) >= -95.0 && commentAngle(overlay.m_anns[0]) <= 95.0,
+          "follow keeps an up-left shaft label upright");
+    overlay.m_anns[0].a = origin + QPoint(80, 160);
+    overlay.m_anns[0].b = origin + QPoint(640, 160);
+
+    flat.family = QStringLiteral("Arial");
+    flat.font = 20;
+    flat.bold = true;
+    flat.italic = true;
+    const QFont styledFont = commentFont(overlay.m_anns[0]);
+    check(styledFont.family() == QStringLiteral("Arial") && qRound(styledFont.pointSizeF()) == 20
+              && styledFont.bold() && styledFont.italic(),
+          "manual family, size, bold and italic reach the glyph font");
+    flat.font = 0;
+    const QFont autoFont = commentFont(overlay.m_anns[0]);
+    check(qAbs(autoFont.pointSizeF() - (6.0 + arrow.pen * 0.382)) < 0.01,
+          "automatic size follows the arrow pen width");
+
+    for (int direction = 2; direction <= 3; ++direction) {
+        const int undoBefore = overlay.m_undoStack.size();
+        const int previousDirection = overlay.m_anns[0].commentStyle.direction;
+        openComment(QStringLiteral("Side"), true, [&](QDialog *dialog) {
+            dialog->findChild<QButtonGroup *>(QStringLiteral("commentDirection"))->button(direction)->click();
+        });
+        check(overlay.m_anns[0].commentStyle.direction == direction
+                  && overlay.m_undoStack.size() == undoBefore + 1,
+              "above and below direction changes commit one undo step");
+        overlay.undoAnnotation();
+        check(overlay.m_anns[0].commentStyle.direction == previousDirection,
+              "undo restores the previous text direction");
+        overlay.redoAnnotation();
+        check(overlay.m_anns[0].commentStyle.direction == direction,
+              "redo restores the side text direction");
+        openComment(QString(), false, [&](QDialog *dialog) {
+            check(dialog->findChild<QButtonGroup *>(QStringLiteral("commentDirection"))->checkedId() == direction,
+                  "re-editing restores the side direction");
+            dialog->findChild<QButtonGroup *>(QStringLiteral("commentDirection"))->button(0)->click();
+        });
+        check(overlay.m_anns[0].commentStyle.direction == direction,
+              "cancelling a direction change preserves the saved direction");
+    }
+    for (int direction = 0; direction < 4; ++direction) {
+        for (const QPoint &delta : {QPoint(400, 0), QPoint(-400, -140), QPoint(0, 200), QPoint(320, -120)}) {
+            Annotation positioned = arrow;
+            positioned.comment = QStringLiteral("Parallel");
+            positioned.commentStyle.direction = direction;
+            positioned.commentStyle.font = 20;
+            positioned.a = mid - delta / 2;
+            positioned.b = mid + delta / 2;
+            QPainterPath glyphs, hole;
+            commentPaths(positioned, glyphs, hole);
+            const QRectF labelBox = hole.boundingRect();
+            const qreal shaftHalf = positioned.pen * 0.5;
+            check(direction == 2 ? labelBox.bottom() < mid.y() - shaftHalf
+                      : direction == 3 ? labelBox.top() > mid.y() + shaftHalf
+                      : qAbs(labelBox.center().y() - mid.y()) < 0.01,
+                  "side labels clear the shaft and inline labels stay centered");
+            Annotation inlineArrow = positioned;
+            inlineArrow.commentStyle.direction = 0;
+            check(direction == 1 ? qFuzzyIsNull(commentAngle(positioned))
+                      : qFuzzyCompare(commentAngle(positioned) + 360, commentAngle(inlineArrow) + 360),
+                  "above and below remain parallel and upright for horizontal, reversed, vertical and diagonal arrows");
+            QImage output(image.size(), QImage::Format_RGB32);
+            output.fill(QColor(20, 30, 40));
+            QPainter painter(&output);
+            painter.translate(-cropOrigin);
+            overlay.drawAnnotation(painter, positioned, QImage());
+            painter.end();
+            check(direction < 2 || output.pixelColor(mid - cropOrigin) == arrow.color,
+                  "side labels preserve the continuous arrow shaft in output");
+            if (!previewPath.isEmpty() && delta == QPoint(320, -120))
+                output.save(previewPath + QStringLiteral(".direction%1.png").arg(direction));
+        }
+    }
+
+    CommentStyle saved;
+    saved.family = QStringLiteral("Arial");
+    saved.font = 20;
+    saved.direction = 3;
+    saved.bold = true;
+    saved.italic = true;
+    saveCommentStyle(saved);
+    const CommentStyle loaded = defaultCommentStyle();
+    check(loaded.family == saved.family && qFuzzyCompare(loaded.font + 1.0, saved.font + 1.0)
+              && loaded.direction == saved.direction && loaded.bold == saved.bold
+              && loaded.italic == saved.italic,
+          "comment style round-trips through the settings file");
+    saveCommentStyle(CommentStyle{});                    // Keep later tests on the defaults.
+    {
+        LensSnipSettings settings;
+        settings.remove(QStringLiteral("Capture/EmbedTextDirection"));
+        settings.setValue(QStringLiteral("Capture/EmbedTextFollowArrow"), false);
+        check(defaultCommentStyle().direction == 1, "legacy horizontal defaults remain compatible");
+        settings.setValue(QStringLiteral("Capture/EmbedTextDirection"), 99);
+        check(defaultCommentStyle().direction == 3, "invalid persisted directions are bounded");
+        saveCommentStyle(CommentStyle{});
+    }
+
+    {
+        LensSnipSettings settings;
+        settings.setValue(QStringLiteral("Capture/DisableArrowDoubleClickComment"), true);
+        bool sawDialog = false;
+        QTimer guard;
+        guard.setInterval(10);
+        QObject::connect(&guard, &QTimer::timeout, [&] {
+            for (QWidget *w : QApplication::topLevelWidgets()) {
+                auto *dialog = qobject_cast<QDialog *>(w);
+                if (dialog && dialog->isVisible()
+                    && dialog->windowTitle() == QStringLiteral("插入文本")) {
+                    sawDialog = true;
+                    dialog->reject();
+                }
+            }
+        });
+        guard.start();
+        QMouseEvent blocked(QEvent::MouseButtonDblClick, mid, overlay.mapToGlobal(mid),
+                            Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+        QApplication::sendEvent(&overlay, &blocked);
+        guard.stop();
+        QApplication::processEvents();
+        check(!sawDialog, "the no-double-click-comment setting suppresses the card");
+        settings.setValue(QStringLiteral("Capture/DisableArrowDoubleClickComment"), false);
+    }
+
+    overlay.m_anns[0].commentStyle = CommentStyle{};
+    overlay.m_anns[0].comment = QStringLiteral("I");
+    overlay.update();
+    const int undoBeforeClear = overlay.m_undoStack.size();
+    openComment(QString(), true);
+    check(overlay.m_anns.size() == 1 && overlay.m_anns[0].comment.isEmpty()
+              && overlay.m_undoStack.size() == undoBeforeClear + 1,
+          "clearing the comment removes the label but keeps the arrow");
+    check(overlay.cropped().toImage() == plain, "clearing the comment restores the uncut arrow pixels");
+
+    overlay.undoAnnotation();
+    check(overlay.m_anns[0].comment == QStringLiteral("I"), "undo restores the comment");
+    overlay.redoAnnotation();
+    check(overlay.m_anns[0].comment.isEmpty(), "redo removes the comment again");
+
+    if (!previewPath.isEmpty()) {
+        plain.save(previewPath + QStringLiteral(".plain.png"));
+        overlay.undoAnnotation();                         // Bring the comment back for previews.
+        CommentStyle &previewStyle = overlay.m_anns[0].commentStyle;
+        previewStyle.direction = 0;
+        previewStyle.font = 0;
+        overlay.m_anns[0].comment = QStringLiteral("Hello");
+        overlay.update();
+        const QImage preview = overlay.cropped().toImage();
+        preview.save(previewPath + QStringLiteral(".comment.png"));
+        const QRect zoom(mid - cropOrigin - QPoint(80, 50), QSize(160, 100));
+        preview.copy(zoom).scaled(QSize(zoom.width() * 2, zoom.height() * 2),
+                                  Qt::KeepAspectRatio, Qt::FastTransformation)
+            .save(previewPath + QStringLiteral(".zoom.png"));
+        overlay.m_anns[0].a = origin + QPoint(100, 270);
+        overlay.m_anns[0].b = origin + QPoint(620, 60);
+        overlay.update();
+        overlay.cropped().toImage().save(previewPath + QStringLiteral(".diagonal.png"));
+    }
+    std::puts("PASS: insert-text card, four directions, font, size, B/I, arrow color, cutout, undo and output");
     return 0;
 }

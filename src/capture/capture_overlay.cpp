@@ -41,6 +41,11 @@
 #include <QAbstractItemView>
 #include <QDialog>
 #include <QLineEdit>
+#include <QFontComboBox>
+#include <QFrame>
+#include <QButtonGroup>
+#include <QFocusEvent>
+#include <QGraphicsDropShadowEffect>
 #include <QHBoxLayout>
 #include <QVBoxLayout>
 #include <QBoxLayout>
@@ -1259,6 +1264,16 @@ void CaptureOverlay::mouseDoubleClickEvent(QMouseEvent *e)
             m_itemDrag = H_None;
             beginTextEdit(e->pos(), hit);
             return;
+        }
+    }
+    if (!m_live && m_mode == Adjusting
+        && (m_atool == ATool::None || (m_atool == ATool::Arrow && m_selAnn >= 0))) {
+        const int hit = arrowAnnotationAt(e->pos());  // Comments stay reachable after locking.
+        if (hit >= 0 && (m_atool == ATool::None || hit == m_selAnn)) {
+            if (!LensSnipSettings().value(
+                    QStringLiteral("Capture/DisableArrowDoubleClickComment"), false).toBool())
+                editArrowComment(hit);
+            return;                                  // An arrow double-click never falls through to pinning.
         }
     }
     if (m_queryPending && (m_waitingClick || m_drag == H_New))
@@ -3433,6 +3448,300 @@ void CaptureOverlay::saveCurrentPreset()
         "QPushButton:hover{background:#2b2d33;}"));
     applyDarkWindowChrome(&dialog);
     if (dialog.exec() == QDialog::Accepted) saveSizePreset(dialog.textValue());
+}
+
+class CommentDialog : public QDialog
+{
+public:
+    CommentDialog(const QString &text, const CaptureOverlay::CommentStyle &style, QWidget *parent);
+    QString textValue() const { return m_text; }
+    CaptureOverlay::CommentStyle styleValue() const { return m_style; }
+
+private:
+    bool eventFilter(QObject *object, QEvent *event) override;
+
+    QString m_text;
+    CaptureOverlay::CommentStyle m_style;
+    QLineEdit *m_edit = nullptr;
+    QButtonGroup *m_direction = nullptr;
+    QComboBox *m_size = nullptr;
+    QFontComboBox *m_font = nullptr;
+    QToolButton *m_bold = nullptr;
+    QToolButton *m_italic = nullptr;
+};
+
+CommentDialog::CommentDialog(const QString &text, const CaptureOverlay::CommentStyle &style,
+                                             QWidget *parent)
+    : QDialog(parent), m_text(text), m_style(style)
+{
+    const auto tr = [](const char *text) {
+        return QCoreApplication::translate("CaptureOverlay", text);
+    };
+    setWindowTitle(tr("插入文本"));
+    setWindowFlag(Qt::WindowStaysOnTopHint, true);
+    setStyleSheet(QStringLiteral(
+        "QLabel{color:#f4f5f8;font-size:14px;background:transparent;border:none;}"
+        "QLabel[commentLabel=\"true\"]{color:#ffffff;font-weight:600;}"
+        "QLabel#commentTitle{font-size:16px;font-weight:600;}"
+        "QLineEdit{color:#f4f5f8;background:#111216;border:1px solid #777980;border-radius:8px;"
+        "padding:0 12px;font-size:16px;selection-background-color:#303138;}"
+        "QComboBox{color:#f4f5f8;background:#111216;border:1px solid #777980;border-radius:6px;"
+        "padding:0 24px 0 10px;font-size:14px;}"
+        "QComboBox QLineEdit{border:none;padding:0;background:transparent;font-size:14px;}"
+        "QComboBox::drop-down{border:none;width:16px;}"
+        "QComboBox::down-arrow{image:url(:/icons/chevron_down_light.png);width:12px;height:12px;}"
+        "QComboBox#commentSize{padding:0;}"
+        "QComboBox#commentSize::drop-down{width:0;}"
+        "QComboBox#commentSize::down-arrow{image:none;}"
+        "QComboBox QAbstractItemView{background:#18191d;color:#f4f5f8;selection-background-color:#303138;"
+        "border:none;outline:0;}"
+        "QToolButton{color:#f4f5f8;background:#111216;border:1px solid #777980;border-radius:6px;font-size:16px;}"
+        "QToolButton:hover{background:#222326;}"
+        "QToolButton:pressed,QToolButton:checked{background:#303138;color:#ffffff;}"
+        "QToolButton#commentClose{background:transparent;border:1px solid transparent;}"
+        "QToolButton#commentClose:hover{background:#222326;}"
+        "QFrame#commentDirections{background:#111216;border:none;border-radius:7px;}"
+        "QToolButton[commentDirection=\"true\"]{background:transparent;border:1px solid transparent;"
+        "border-radius:4px;font-size:13px;color:#9c9da1;}"
+        "QToolButton[commentDirection=\"true\"]:hover{background:#222326;}"
+        "QToolButton[commentDirection=\"true\"]:checked{background:#303138;color:#f4f5f8;}"
+        "QPushButton{color:#f4f5f8;background:transparent;border:1px solid transparent;border-radius:6px;"
+        "padding:0 11px;font-size:14px;text-align:center;}"
+        "QPushButton:hover{background:#222326;}"
+        "QPushButton:pressed{background:#2b2d33;}"
+        "QPushButton#commentConfirm{background:#e5e5e6;color:#111216;font-weight:600;}"
+        "QPushButton#commentConfirm:hover{background:#ffffff;}"
+        "QPushButton#commentConfirm:pressed{background:#c5c7ce;}"
+        "QToolButton[kbdFocus=\"true\"],QPushButton[kbdFocus=\"true\"],"
+        "QComboBox[kbdFocus=\"true\"],QLineEdit[kbdFocus=\"true\"]{border:2px solid #c5c7ce;}"
+        "QToolButton#commentClose[kbdFocus=\"true\"]{border:2px solid #c5c7ce;}"
+        "QComboBox QLineEdit[kbdFocus=\"true\"]{border:none;}"));
+
+    auto *root = new QVBoxLayout(this);
+    root->setContentsMargins(21, 21, 21, 21);
+    root->setSpacing(0);
+    auto *header = new QHBoxLayout;
+    auto *title = new QLabel(windowTitle());
+    title->setObjectName(QStringLiteral("commentTitle"));
+    header->addWidget(title);
+    header->addStretch();
+    auto *close = new QToolButton;
+    close->setObjectName(QStringLiteral("commentClose"));
+    close->setIcon(subtleIcon(Icon::CardClose, 18));
+    close->setIconSize(QSize(18, 18));
+    close->setFixedSize(28, 28);
+    close->setAccessibleName(tr("关闭"));
+    connect(close, &QToolButton::clicked, this, &QDialog::reject);
+    header->addWidget(close);
+    root->addLayout(header);
+    root->addSpacing(20);
+
+    m_edit = new QLineEdit(m_text);
+    m_edit->setObjectName(QStringLiteral("commentText"));
+    m_edit->setAccessibleName(tr("插入文本"));
+    m_edit->setFixedHeight(48);
+    m_edit->selectAll();
+    root->addWidget(m_edit);
+    root->addSpacing(16);
+
+    auto *fontRow = new QHBoxLayout;
+    fontRow->setSpacing(12);
+    auto *fontLabel = new QLabel(tr("字体"));
+    fontLabel->setObjectName(QStringLiteral("commentFontLabel"));
+    fontLabel->setProperty("commentLabel", true);
+    fontRow->addWidget(fontLabel);
+    m_font = new QFontComboBox;
+    m_font->setObjectName(QStringLiteral("commentFont"));
+    m_font->setCurrentFont(QFont(m_style.family));
+    m_font->setMinimumWidth(0);
+    m_font->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
+    m_font->setFixedHeight(32);
+    m_font->setAccessibleName(tr("字体"));
+    fontLabel->setBuddy(m_font);
+    m_font->view()->setMinimumWidth(200);
+    fontRow->addWidget(m_font, 1);
+    m_size = new CenteredCombo;
+    m_size->setObjectName(QStringLiteral("commentSize"));
+    m_size->addItem(tr("自动"), 0);
+    for (int size = 5; size <= 71; ++size) m_size->addItem(QString::number(size), size);
+    int sizeIndex = 0;
+    if (m_style.font > 0) {
+        const int wanted = qRound(m_style.font);
+        sizeIndex = m_size->findData(wanted);
+        if (sizeIndex < 0) sizeIndex = qBound(1, wanted - 4, m_size->count() - 1);
+    }
+    m_size->setCurrentIndex(sizeIndex);
+    m_size->setFixedSize(52, 32);
+    m_size->setMaxVisibleItems(10);
+    m_size->setToolTip(tr("字体大小"));
+    m_size->setAccessibleName(tr("字体大小"));
+    fontRow->addWidget(m_size);
+    m_bold = new QToolButton;
+    m_bold->setObjectName(QStringLiteral("commentBold"));
+    m_bold->setIcon(makeIcon(Icon::Bold, 16, true));
+    m_bold->setIconSize(QSize(16, 16));
+    m_bold->setCheckable(true);
+    m_bold->setChecked(m_style.bold);
+    m_bold->setFixedSize(32, 32);
+    m_bold->setToolTip(tr("粗体"));
+    m_bold->setAccessibleName(tr("粗体"));
+    m_italic = new QToolButton;
+    m_italic->setObjectName(QStringLiteral("commentItalic"));
+    m_italic->setIcon(makeIcon(Icon::Italic, 16, true));
+    m_italic->setIconSize(QSize(16, 16));
+    m_italic->setCheckable(true);
+    m_italic->setChecked(m_style.italic);
+    m_italic->setFixedSize(32, 32);
+    m_italic->setToolTip(tr("斜体"));
+    m_italic->setAccessibleName(tr("斜体"));
+    auto *format = new QHBoxLayout;
+    format->setSpacing(8);
+    format->addWidget(m_bold);
+    format->addWidget(m_italic);
+    fontRow->addLayout(format);
+    root->addLayout(fontRow);
+    root->addSpacing(16);
+
+    auto *directionRow = new QHBoxLayout;
+    directionRow->setSpacing(12);
+    auto *directionLabel = new QLabel(tr("方向"));
+    directionLabel->setObjectName(QStringLiteral("commentDirectionLabel"));
+    directionLabel->setProperty("commentLabel", true);
+    const int labelWidth = qMax(28, qMax(fontLabel->sizeHint().width(), directionLabel->sizeHint().width()));
+    fontLabel->setFixedWidth(labelWidth);
+    directionLabel->setFixedWidth(labelWidth);
+    directionRow->addWidget(directionLabel);
+    auto *segments = new QFrame;
+    segments->setObjectName(QStringLiteral("commentDirections"));
+    auto *segmentRow = new QHBoxLayout(segments);
+    segmentRow->setContentsMargins(3, 3, 3, 3);
+    segmentRow->setSpacing(4);
+    m_direction = new QButtonGroup(this);
+    m_direction->setObjectName(QStringLiteral("commentDirection"));
+    const QStringList directions{tr("跟随"), tr("水平"), tr("上方"), tr("下方")};
+    for (int i = 0; i < directions.size(); ++i) {
+        auto *button = new QToolButton;
+        button->setObjectName(QStringLiteral("commentDirection%1").arg(i));
+        button->setProperty("commentDirection", true);
+        button->setText(directions[i]);
+        button->setAccessibleName(directions[i]);
+        button->setCheckable(true);
+        button->setFixedHeight(26);
+        button->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
+        m_direction->addButton(button, i);
+        button->setChecked(i == m_style.direction);
+        segmentRow->addWidget(button, 1);
+    }
+    directionRow->addWidget(segments, 1);
+    root->addLayout(directionRow);
+    root->addSpacing(24);
+
+    auto *actions = new QHBoxLayout;
+    actions->setSpacing(8);
+    actions->addStretch();
+    auto *ok = new QPushButton(tr("确定"));
+    auto *cancel = new QPushButton(tr("取消"));
+    ok->setObjectName(QStringLiteral("commentConfirm"));
+    cancel->setObjectName(QStringLiteral("commentCancel"));
+    ok->setFixedSize(72, 32);
+    cancel->setFixedHeight(32);
+    cancel->setAutoDefault(false);
+    ok->setDefault(true);
+    connect(ok, &QPushButton::clicked, this, &QDialog::accept);
+    connect(cancel, &QPushButton::clicked, this, &QDialog::reject);
+    actions->addWidget(cancel);
+    actions->addWidget(ok);
+    root->addLayout(actions);
+
+    connect(m_edit, &QLineEdit::textChanged, this, [this](const QString &value) { m_text = value; });
+    connect(m_direction, &QButtonGroup::idClicked, this, [this](int index) {
+        m_style.direction = index;
+    });
+    connect(m_font, &QFontComboBox::currentFontChanged, this, [this](const QFont &font) {
+        m_style.family = font.family();
+    });
+    connect(m_size, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int index) {
+        m_style.font = m_size->itemData(index).toDouble();
+    });
+    connect(m_bold, &QToolButton::toggled, this, [this](bool on) { m_style.bold = on; });
+    connect(m_italic, &QToolButton::toggled, this, [this](bool on) { m_style.italic = on; });
+    styleDialog(this, false);
+    layout()->setContentsMargins(24, 24, 24, 24);
+    auto *surface = findChild<QWidget *>(QStringLiteral("dialogSurface"));
+    auto *shadow = new QGraphicsDropShadowEffect(surface);
+    shadow->setBlurRadius(48);
+    shadow->setOffset(0, 16);
+    shadow->setColor(DialogTheme::shadow);
+    surface->setGraphicsEffect(shadow);
+    setFixedWidth(548);
+    for (auto *control : findChildren<QWidget *>()) {
+        if (control->focusPolicy() == Qt::NoFocus) continue;
+        control->setProperty("kbdFocus", false);
+        control->installEventFilter(this);
+    }
+    QList<QWidget *> tabOrder{m_edit, m_font, m_size, m_bold, m_italic};
+    for (int i = 0; i < 4; ++i) tabOrder.append(m_direction->button(i));
+    tabOrder.append(cancel);
+    tabOrder.append(ok);
+    tabOrder.append(close);
+    for (int i = 1; i < tabOrder.size(); ++i) setTabOrder(tabOrder[i - 1], tabOrder[i]);
+    m_edit->setFocus(Qt::OtherFocusReason);
+}
+
+bool CommentDialog::eventFilter(QObject *object, QEvent *event)
+{
+    if (event->type() == QEvent::FocusIn || event->type() == QEvent::FocusOut
+        || event->type() == QEvent::MouseButtonPress) {
+        if (auto *control = qobject_cast<QWidget *>(object)) {
+            if (auto *combo = qobject_cast<QComboBox *>(control->parentWidget())) control = combo;
+            bool keyboard = false;
+            if (event->type() == QEvent::FocusIn) {
+                const auto reason = static_cast<QFocusEvent *>(event)->reason();
+                keyboard = reason == Qt::TabFocusReason || reason == Qt::BacktabFocusReason
+                    || reason == Qt::ShortcutFocusReason;
+            }
+            control->setProperty("kbdFocus", keyboard);
+            control->style()->unpolish(control);
+            control->style()->polish(control);
+            control->update();
+        }
+    }
+    return QDialog::eventFilter(object, event);
+}
+
+void CaptureOverlay::editArrowComment(int index)
+{
+    if (index < 0 || index >= m_anns.size() || m_anns[index].tool != ATool::Arrow) return;
+    const Annotation &ann = m_anns[index];
+    // A stored comment keeps its own style; a fresh one starts from the current defaults.
+    const CommentStyle initial = ann.comment.isEmpty() ? defaultCommentStyle() : ann.commentStyle;
+    CommentDialog dialog(ann.comment, initial, this);
+    dialog.adjustSize();
+    // Center on the arrow's midpoint, then keep the frame inside the screen.
+    const QPoint anchor = mapToGlobal(((QPointF(ann.a) + QPointF(ann.b)) * 0.5).toPoint());
+    const QScreen *screen = QGuiApplication::screenAt(anchor);
+    if (!screen) screen = QGuiApplication::primaryScreen();
+    const QRect available = screen->availableGeometry();
+    const QSize size = dialog.size();
+    const int maxX = qMax(available.left(), available.right() - size.width() + 1);
+    const int maxY = qMax(available.top(), available.bottom() - size.height() + 1);
+    dialog.move(qBound(available.left(), anchor.x() - size.width() / 2, maxX),
+                qBound(available.top(), anchor.y() - size.height() / 2, maxY));
+    if (dialog.exec() != QDialog::Accepted) { setFocus(); return; }
+    const QString text = dialog.textValue().trimmed();
+    const CommentStyle style = dialog.styleValue();
+    setFocus();
+    saveCommentStyle(style);
+    const auto same = [](const CommentStyle &a, const CommentStyle &b) {
+        return a.family == b.family && qFuzzyCompare(a.font + 1.0, b.font + 1.0)
+            && a.direction == b.direction && a.bold == b.bold && a.italic == b.italic;
+    };
+    if (text == ann.comment && same(style, ann.commentStyle)) return;
+    pushUndo();
+    m_anns[index].comment = text;
+    m_anns[index].commentStyle = style;
+    m_selAnn = index;
+    update();
 }
 
 void CaptureOverlay::saveSizePreset(const QString &name)

@@ -24,6 +24,7 @@
 #include <QIcon>
 #include <QColor>
 #include <QFont>
+#include <QFontMetricsF>
 #include <QTransform>
 #include <QApplication>
 #include <QWidget>
@@ -50,6 +51,7 @@
 #include <QInputMethodEvent>
 #include <QAbstractTextDocumentLayout>
 #include <QtMath>
+#include <cmath>
 #include <QToolButton>
 #include <QComboBox>
 #include <QSpinBox>
@@ -469,6 +471,16 @@ int CaptureOverlay::textAnnotationAt(const QPoint &pos) const
     return -1;
 }
 
+int CaptureOverlay::arrowAnnotationAt(const QPoint &pos) const
+{
+    // Double-click opens a comment on the topmost arrow, even after it was locked.
+    for (int i = m_anns.size() - 1; i >= 0; --i) {
+        if (!annotationHit(m_anns[i], mapToLocal(m_anns[i], pos))) continue;
+        return m_anns[i].tool == ATool::Arrow ? i : -1;
+    }
+    return -1;
+}
+
 QVector<QPoint> CaptureOverlay::annAnchors(const Annotation &ann) const
 {
     if (ann.autoMosaic) return {};
@@ -834,6 +846,75 @@ QFont CaptureOverlay::textFont(const Annotation &ann)
     font.setItalic(ann.italic);
     font.setUnderline(ann.underline);
     return font;
+}
+
+QFont CaptureOverlay::commentFont(const Annotation &ann)
+{
+    // Auto size follows the arrow weight, so thin arrows keep small labels and
+    // heavy arrows keep the text readable without a separate style control.
+    QFont font(ann.commentStyle.family);
+    font.setPointSizeF(ann.commentStyle.font > 0
+                           ? ann.commentStyle.font
+                           : qMax<qreal>(6.0, 6.0 + qMax<qreal>(1.0, ann.pen) * 0.382));
+    font.setBold(ann.commentStyle.bold);
+    font.setItalic(ann.commentStyle.italic);
+    return font;
+}
+
+CaptureOverlay::CommentStyle CaptureOverlay::defaultCommentStyle()
+{
+    LensSnipSettings settings;
+    CommentStyle style;
+    style.family = settings.value(QStringLiteral("Capture/EmbedTextFont"), style.family).toString();
+    style.font = qBound<qreal>(0, settings.value(QStringLiteral("Capture/EmbedTextFontSize"), 0).toDouble(), 71);
+    style.direction = qBound(0, settings.value(QStringLiteral("Capture/EmbedTextDirection"),
+        settings.value(QStringLiteral("Capture/EmbedTextFollowArrow"), true).toBool() ? 0 : 1).toInt(), 3);
+    style.bold = settings.value(QStringLiteral("Capture/EmbedTextFontBold"), false).toBool();
+    style.italic = settings.value(QStringLiteral("Capture/EmbedTextFontItalic"), false).toBool();
+    return style;
+}
+
+void CaptureOverlay::saveCommentStyle(const CommentStyle &style)
+{
+    LensSnipSettings settings;
+    settings.setValue(QStringLiteral("Capture/EmbedTextFont"), style.family);
+    settings.setValue(QStringLiteral("Capture/EmbedTextFontSize"), style.font);
+    settings.setValue(QStringLiteral("Capture/EmbedTextDirection"), style.direction);
+    settings.setValue(QStringLiteral("Capture/EmbedTextFollowArrow"), style.direction != 1);
+    settings.setValue(QStringLiteral("Capture/EmbedTextFontBold"), style.bold);
+    settings.setValue(QStringLiteral("Capture/EmbedTextFontItalic"), style.italic);
+}
+
+qreal CaptureOverlay::commentAngle(const Annotation &ann)
+{
+    // Screen-space shaft angle in QLineF's 0..360 convention; flip near-horizontal
+    // labels so text never renders upside down.
+    qreal angle = qRadiansToDegrees(qAtan2(qreal(ann.b.y() - ann.a.y()), qreal(ann.b.x() - ann.a.x())));
+    angle = std::fmod(angle + 360.0, 360.0);
+    if (angle > 95.0 && angle < 265.0) angle -= 180.0;
+    return ann.commentStyle.direction == 1 ? 0.0 : angle;
+}
+
+void CaptureOverlay::commentPaths(const Annotation &ann, QPainterPath &text, QPainterPath &background)
+{
+    text = QPainterPath();
+    background = QPainterPath();
+    if (ann.tool != ATool::Arrow || ann.comment.isEmpty()) return;
+    const QFont font = commentFont(ann);
+    const QFontMetricsF metrics(font);
+    QRectF box = metrics.boundingRect(ann.comment);
+    const QPointF center = (QPointF(ann.a) + QPointF(ann.b)) * 0.5;
+    box.moveCenter(center);
+    if (ann.commentStyle.direction >= 2) {
+        const qreal offset = box.height() * 0.5 + qMax<qreal>(1.0, ann.pen) * 0.5 + 4.0;
+        box.translate(0, ann.commentStyle.direction == 2 ? -offset : offset);
+    }
+    text.addText(QPointF(box.left(), box.top() + metrics.ascent()), font, ann.comment);
+    // Leave one lowercase-x advance on each side of the label.
+    const qreal pad = qMax<qreal>(2.0, metrics.horizontalAdvance(QLatin1Char('x')));
+    const QRectF hole = box.adjusted(-pad, 0, pad, 0);
+    const qreal radius = qMax<qreal>(2.0, qMin(hole.width(), hole.height()) * 0.15);
+    background.addRoundedRect(hole, radius, radius);
 }
 
 int CaptureOverlay::numberDiameter(const Annotation &ann)
@@ -1786,6 +1867,7 @@ void CaptureOverlay::commitAnnotation()
               ? (m_ann.a - m_ann.b).manhattanLength() >= 6
               : m_ann.rect.width() >= 3 && m_ann.rect.height() >= 3;
     if (meaningful) {                            // Discard accidental tiny strokes.
+        if (m_ann.tool == ATool::Arrow) m_ann.commentStyle = defaultCommentStyle();
         pushUndo();
         m_anns.append(m_ann);
         normalizeNumbers();
@@ -3898,6 +3980,33 @@ void CaptureOverlay::drawAnnotation(QPainter &p, const Annotation &ann, const QI
         if (length < 0.5) break;
         const QPointF dir = (tip - start) / length;
         const QPointF normal(-dir.y(), dir.x());
+        QPainterPath commentText, commentHole;
+        commentPaths(ann, commentText, commentHole);
+        const bool hasComment = !commentText.isEmpty() && !commentHole.isEmpty();
+        if (hasComment) {
+            const QPointF mid = (start + tip) * 0.5;
+            const qreal angle = commentAngle(ann);   // Follow/flat plus upright flipping.
+            QTransform turn;
+            turn.translate(mid.x(), mid.y());
+            turn.rotate(angle);
+            turn.translate(-mid.x(), -mid.y());
+            commentText = turn.map(commentText);
+            commentHole = turn.map(commentHole);
+            const CommentStyle &cs = ann.commentStyle;
+            p.setPen(Qt::NoPen);
+            p.setBrush(ann.color);
+            p.drawPath(commentText);
+            if (cs.direction < 2) {
+                // Only inline labels cut a gap in the shaft.
+                QPainterPath clip;
+                clip.setFillRule(Qt::OddEvenFill);
+                const qreal margin = qMax<qreal>(8.0, 4.0 * w);
+                clip.addRect(QRectF(start, tip).normalized()
+                                 .adjusted(-margin, -margin, margin, margin));
+                clip.addPath(commentHole);
+                p.setClipPath(clip, Qt::IntersectClip);
+            }
+        }
         const bool both = shape == 1 || shape == 3 || shape == 8 || shape == 9;
         const bool barbed = shape == 0 || shape == 1 || shape == 5 || shape == 9;
         const bool flat = shape == 7 || shape == 8;
